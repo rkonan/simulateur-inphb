@@ -422,8 +422,16 @@ def generer_population_unique_par_lots(
 
 
 def lister_filieres_db(path: str | Path) -> List[str]:
+    """Liste les filières disponibles dans la base agrégée."""
     with sqlite3.connect(path) as con:
-        return pd.read_sql_query("SELECT DISTINCT filiere FROM scores ORDER BY filiere", con)["filiere"].tolist()
+        rows = con.execute(
+            """
+            SELECT DISTINCT filiere
+            FROM distributions_scores
+            ORDER BY filiere
+            """
+        ).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def evaluer_admissibilite_depuis_db(
@@ -432,36 +440,64 @@ def evaluer_admissibilite_depuis_db(
     score_candidat: float,
     nb_dossiers_concurrents: int,
     seuil_admissibles: int = 1500,
-    nb_tirages: int = 5000,
-    seed: int = 123,
 ) -> Dict[str, float | int | None]:
-    """Estime la chance d'être dans les `seuil_admissibles` premiers dossiers.
+    """Évalue l'admissibilité à partir de la distribution agrégée des scores.
 
-    Le nombre de places finales par filière n'intervient plus. Le candidat est
-    comparé à un nombre configurable de dossiers concurrents. Un succès est
-    observé lorsque son rang est inférieur ou égal à 1 500.
+    La base contient, pour chaque filière et chaque score arrondi à deux
+    décimales, l'effectif observé. Aucun score individuel n'est chargé en
+    mémoire et aucun tirage Monte-Carlo n'est effectué.
+
+    Si ``p`` désigne la proportion de la population de référence ayant un
+    score strictement supérieur à celui du candidat, le nombre de concurrents
+    placés devant lui suit une loi binomiale de paramètres
+    ``nb_dossiers_concurrents`` et ``p``.
     """
-    with sqlite3.connect(path) as con:
-        scores = pd.read_sql_query(
-            "SELECT score FROM scores WHERE filiere=?",
-            con,
-            params=(filiere,),
-        )["score"].to_numpy(dtype=float)
+    score_reference = round(float(score_candidat), 2)
 
-    population = len(scores)
+    with sqlite3.connect(path) as con:
+        population, nb_devant, nb_inferieurs_ou_egaux = con.execute(
+            """
+            SELECT
+                COALESCE(SUM(effectif), 0) AS population,
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN score_arrondi > ? THEN effectif
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) AS nb_devant,
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN score_arrondi <= ? THEN effectif
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) AS nb_inferieurs_ou_egaux
+            FROM distributions_scores
+            WHERE filiere = ?
+            """,
+            (score_reference, score_reference, filiere),
+        ).fetchone()
+
+    population = int(population or 0)
+    nb_devant = int(nb_devant or 0)
+    nb_inferieurs_ou_egaux = int(nb_inferieurs_ou_egaux or 0)
+
     invalid = (
         population == 0
         or nb_dossiers_concurrents <= 0
         or seuil_admissibles <= 0
         or nb_dossiers_concurrents < seuil_admissibles
     )
+
     if invalid:
         return {
             "probabilite": None,
             "probabilite_exacte": None,
-            "probabilite_monte_carlo": None,
-            "succes_monte_carlo": None,
-            "nb_tirages": int(nb_tirages),
             "rang_moyen": None,
             "rang_median": None,
             "rang_p10": None,
@@ -470,43 +506,43 @@ def evaluer_admissibilite_depuis_db(
             "population": population,
             "seuil_admissibles": int(seuil_admissibles),
             "dossiers_concurrents": int(nb_dossiers_concurrents),
+            "proportion_devant": None,
+            "score_reference": score_reference,
         }
 
-    proportion_devant = float(np.mean(scores > score_candidat))
-    percentile = float(np.mean(scores <= score_candidat) * 100)
+    proportion_devant = nb_devant / population
+    percentile = nb_inferieurs_ou_egaux / population * 100
 
-    probabilite_exacte = float(
-        binom.cdf(
-            seuil_admissibles - 1,
-            nb_dossiers_concurrents,
-            proportion_devant,
-        ) * 100
+    distribution_rang = binom(
+        n=int(nb_dossiers_concurrents),
+        p=float(proportion_devant),
     )
 
-    rng = np.random.default_rng(seed)
-    replace = nb_dossiers_concurrents > population
-    ranks = np.empty(nb_tirages, dtype=np.int32)
-    for i in range(nb_tirages):
-        sample = rng.choice(scores, size=nb_dossiers_concurrents, replace=replace)
-        ranks[i] = int(np.sum(sample > score_candidat) + 1)
-
-    succes = int(np.count_nonzero(ranks <= seuil_admissibles))
-    probabilite_mc = float(succes / nb_tirages * 100)
+    probabilite_exacte = float(
+        distribution_rang.cdf(int(seuil_admissibles) - 1) * 100
+    )
 
     return {
         "probabilite": probabilite_exacte,
         "probabilite_exacte": probabilite_exacte,
-        "probabilite_monte_carlo": probabilite_mc,
-        "succes_monte_carlo": succes,
-        "nb_tirages": int(nb_tirages),
-        "rang_moyen": float(ranks.mean()),
-        "rang_median": float(np.median(ranks)),
-        "rang_p10": float(np.percentile(ranks, 10)),
-        "rang_p90": float(np.percentile(ranks, 90)),
-        "percentile": percentile,
+        "rang_moyen": float(
+            1 + nb_dossiers_concurrents * proportion_devant
+        ),
+        "rang_median": float(
+            1 + distribution_rang.ppf(0.50)
+        ),
+        "rang_p10": float(
+            1 + distribution_rang.ppf(0.10)
+        ),
+        "rang_p90": float(
+            1 + distribution_rang.ppf(0.90)
+        ),
+        "percentile": float(percentile),
         "population": population,
         "seuil_admissibles": int(seuil_admissibles),
         "dossiers_concurrents": int(nb_dossiers_concurrents),
+        "proportion_devant": float(proportion_devant),
+        "score_reference": score_reference,
     }
 
 
@@ -520,14 +556,17 @@ def evaluer_candidat_depuis_db(
     nb_tirages: int = 5000,
     seed: int = 123,
 ) -> Dict[str, float | int | None]:
+    """Alias de compatibilité.
+
+    ``nb_tirages`` et ``seed`` sont conservés dans la signature pour les
+    anciens appels, mais ne sont plus utilisés.
+    """
     return evaluer_admissibilite_depuis_db(
         path=path,
         filiere=filiere,
         score_candidat=score_candidat,
         nb_dossiers_concurrents=nb_concurrents,
         seuil_admissibles=nb_places,
-        nb_tirages=nb_tirages,
-        seed=seed,
     )
 
 

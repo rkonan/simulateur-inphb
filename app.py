@@ -41,7 +41,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 LOCAL_PARAMS = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx"))
-LOCAL_DB = Path(os.getenv("INPHB_DB", "population_inphb.db"))
+LOCAL_DB = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
 COLLECTE_DB = Path(os.getenv("INPHB_COLLECTE_DB", "data/simulations_anonymes.db"))
 SEUIL_ADMISSIBLES = 2000
 
@@ -75,7 +75,7 @@ def niveau_probabilite(valeur: float | None) -> tuple[str, str, str]:
         return (
             "Très favorable",
             "★★★★★",
-            "Ton dossier semble particulièrement bien adapté à cette filière. D'après nos simulations, tu fais partie des profils les plus compétitifs."
+            "Ton dossier semble particulièrement bien adapté à cette filière. D'après la population de référence, tu fais partie des profils les plus compétitifs."
         )
 
     if valeur >= 60:
@@ -191,53 +191,48 @@ def recommandation_intrinseque(scores_tries: pd.DataFrame) -> str:
     )
 
 
-st.title("🎓 Simulateur de présélection bachelier INP-HB")
-st.caption("📊 Estime tes chances d'être admissible sur dossier au concours bachelier INP-HB.")
-# st.caption(
-#     "Le parcours distingue d'abord la qualité intrinsèque de ton dossier, puis le compare "
-#     f"à une population fictive pour estimer sa chance d'être dans les **{SEUIL_ADMISSIBLES}** premiers. "
-#     "L'épreuve écrite et l'admission finale ne sont pas modélisées."
-# )
+st.title("🎓 Simulateur de dossier bachelier INP-HB")
+
 st.markdown(
-    f"""
-<div style="font-size:0.85rem;color:#6c757d;">
-Le parcours distingue d'abord la qualité intrinsèque de ton dossier, puis le compare à une population fictive pour estimer sa chance d'être dans les <strong>{SEUIL_ADMISSIBLES}</strong> premiers.
-L'épreuve écrite et l'admission finale ne sont pas modélisées.
+    """
+<h4 style="
+    color:#4b5563;
+    font-weight:500;
+    margin-top:-0.5rem;
+    margin-bottom:1rem;
+">
+📊 Évalue ton dossier et identifie les filières où il paraît le plus compétitif.
+</h4>
+""",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+<div style="
+    background:#f6f8fa;
+    border-left:4px solid #6c757d;
+    padding:0.9rem 1rem;
+    border-radius:0.35rem;
+    margin:0.8rem 0 1.4rem 0;
+    font-size:0.95rem;
+    line-height:1.5;
+    color:#343a40;
+">
+Le simulateur calcule le score de ton dossier selon les règles propres à chaque filière, puis le compare à une population de référence issue d'un modèle statistique.
+<br>
+<strong>Les résultats sont indicatifs. Ils ne garantissent pas l'admissibilité et ne remplacent pas une décision officielle de l'INP-HB.</strong>
 </div>
 """,
     unsafe_allow_html=True,
 )
+
+
 nb_dossiers=3000
-tirages=5000
-seed=123
 collecte=True
-# with st.sidebar:
-#     st.header("Hypothèses du modèle")
-#     nb_dossiers = st.number_input(
-#         "Dossiers concurrents simulés par filière",
-#         min_value=SEUIL_ADMISSIBLES,
-#         max_value=20_000,
-#         value=3_000,
-#         step=250,
-#         help=(
-#             "Nombre total supposé de dossiers en concurrence dans une filière. "
-#             f"Le succès correspond à un rang inférieur ou égal à {SEUIL_ADMISSIBLES}."
-#         ),
-#     )
-#     tirages = st.number_input("Tirages Monte-Carlo", 100, 50_000, 5_000, 500)
-#     seed = st.number_input("Seed", 0, 999_999, 123)
-#     #collecte = st.checkbox("Collecte anonymisée", True)
-#     
-#     st.metric("Seuil d'admissibilité", f"Top {SEUIL_ADMISSIBLES}")
-#     st.caption("Population V4 : 60 % profils forts, 40 % profils élargis.")
-#     try:
-#         profils_uniques = stats_collecte(COLLECTE_DB)["profils_uniques"]
-#     except Exception:
-#         profils_uniques = 0
-#     st.caption(f"Profils collectés : {profils_uniques}")
 
 if not LOCAL_PARAMS.exists() or not LOCAL_DB.exists():
-    st.error("Ajoute parametres_simulateur_inphb.xlsx et population_inphb.db dans le dossier.")
+    st.error("Ajoute parametres_simulateur_inphb.xlsx et population_inphb_distributions.db dans le dossier.")
     st.stop()
 
 params = charger_parametres(LOCAL_PARAMS)
@@ -410,19 +405,17 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
         st.stop()
 
     resultats: list[dict[str, Any]] = []
-    progression = st.progress(0, text="Préparation des simulations…")
+    progression = st.progress(0, text="Préparation de l’analyse…")
     total_filieres = max(len(scores), 1)
 
     for index, (filiere, score) in enumerate(scores.items(), start=1):
-        progression.progress((index - 1) / total_filieres, text=f"Simulation de {filiere}…")
+        progression.progress((index - 1) / total_filieres, text=f"Analyse de {filiere}…")
         resultat = evaluer_admissibilite_depuis_db(
             path=LOCAL_DB,
             filiere=filiere,
             score_candidat=score,
             nb_dossiers_concurrents=int(nb_dossiers),
             seuil_admissibles=SEUIL_ADMISSIBLES,
-            nb_tirages=int(tirages),
-            seed=int(seed) + index,
         )
         marge = None
         if resultat.get("rang_moyen") is not None:
@@ -458,7 +451,7 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
         resume_1.metric("Meilleure filière", str(meilleure["filiere"]))
         # resume_2.metric("Probabilité estimée", formater_probabilite(meilleure["probabilite"]))
         resume_3.metric(
-            "Rang moyen simulé",
+            "Rang moyen projeté",
             f"{meilleure['rang_moyen']:.0f} / {int(nb_dossiers):,}".replace(",", " "),
         )
         resume_4.metric(
@@ -613,14 +606,7 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
     )
 
     display = frame.copy()
-    display["Probabilité exacte"] = display["probabilite_exacte"].map(formater_probabilite)
-    display["Estimation Monte-Carlo"] = display["probabilite_monte_carlo"].map(formater_probabilite)
-    display["Succès Monte-Carlo"] = display.apply(
-        lambda row: "Non calculé"
-        if pd.isna(row.get("succes_monte_carlo"))
-        else f"{int(row['succes_monte_carlo']):,} / {int(row['nb_tirages']):,}".replace(",", " "),
-        axis=1,
-    )
+    display["Probabilité estimée"] = display["probabilite_exacte"].map(formater_probabilite)
     display["Marge au seuil"] = display["marge"].map(formater_marge)
     display["Lecture de la marge"] = display["marge"].map(niveau_marge)
 
@@ -649,9 +635,7 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
                     "Seuil admissible",
                     "Marge au seuil",
                     "Lecture de la marge",
-                    "Probabilité exacte",
-                    "Estimation Monte-Carlo",
-                    "Succès Monte-Carlo",
+                    "Probabilité estimée",
                     "Rang moyen",
                     "Rang médian",
                     "Rang P10",
@@ -667,13 +651,15 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
         with st.expander("Comment lire l'analyse comparative ?"):
             st.markdown(
                 f"""
-    - Le moteur tire **{int(nb_dossiers):,} dossiers concurrents** dans la population fictive.
+    - La base synthétique contient la distribution des scores par filière, arrondis à deux décimales.
+    - La proportion de profils ayant un score supérieur au tien est calculée directement dans SQLite.
+    - Cette proportion sert à projeter ton rang parmi **{int(nb_dossiers):,} dossiers concurrents**.
     - Ton dossier est déclaré admissible lorsque son rang est dans le **Top {SEUIL_ADMISSIBLES}**.
     - La **marge au seuil** vaut : `{SEUIL_ADMISSIBLES} - rang moyen`.
-    - Une marge positive signifie que le rang moyen est dans la zone admissible.
-    - Une marge négative signifie qu'il manque en moyenne le nombre de places indiqué.
-    - La probabilité exacte vient d'un calcul binomial. Le Monte-Carlo décrit la distribution des rangs.
-    - Le nombre de places finales par filière n'intervient pas.
+    - Une marge positive place le rang moyen dans la zone admissible.
+    - Une marge négative indique le nombre moyen de places manquantes.
+    - La probabilité et les quantiles de rang viennent d'un calcul binomial exact.
+    - Aucun tirage Monte-Carlo n'est effectué.
     """.replace(",", " ")
             )
 
@@ -685,6 +671,6 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
             notes_bac,
             moyennes,
             resultats,
-            version_modele="v4",
+            version_modele="v5_distribution",
         )
         #st.info("Profil enregistré sous forme anonymisée et dédupliquée par SHA-256.")
