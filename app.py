@@ -52,25 +52,45 @@ LOCAL_PARAMS = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx"
 LOCAL_DB = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
 SEUIL_ADMISSIBLES = 1700
 
+def lire_secret(nom: str) -> str:
+    valeur_env = os.getenv(nom)
 
-def creer_stockage_analyses() -> StockageAnalyses:
-    """Construit le moteur de sauvegarde configuré pour l'application."""
+    if valeur_env:
+        return valeur_env.strip()
+
     try:
-        web_app_url = str(st.secrets["GOOGLE_SHEETS_WEB_APP_URL"])
-        api_secret = str(st.secrets["GOOGLE_SHEETS_API_SECRET"])
+        return str(st.secrets[nom]).strip()
     except (KeyError, FileNotFoundError):
-        print("Collecte Google Sheets désactivée : secrets absents.")
+        return ""
+    
+def creer_stockage_analyses() -> StockageAnalyses:
+    web_app_url = lire_secret(
+        "GOOGLE_SHEETS_WEB_APP_URL"
+    )
+    api_secret = lire_secret(
+        "GOOGLE_SHEETS_API_SECRET"
+    )
+
+    if not web_app_url or not api_secret:
+        print(
+            "Collecte Google Sheets désactivée : "
+            "configuration absente."
+        )
+        print(
+            "URL configurée :",
+            bool(web_app_url),
+        )
+        print(
+            "Secret configuré :",
+            bool(api_secret),
+        )
         return StockageDesactive()
 
-    try:
-        return StockageGoogleSheets(
-            web_app_url=web_app_url,
-            api_secret=api_secret,
-            timeout_secondes=15,
-        )
-    except ValueError as exc:
-        print(f"Collecte Google Sheets désactivée : {exc}")
-        return StockageDesactive()
+    return StockageGoogleSheets(
+        web_app_url=web_app_url,
+        api_secret=api_secret,
+        timeout_secondes=15,
+    )
 
 
 STOCKAGE_ANALYSES = creer_stockage_analyses()
