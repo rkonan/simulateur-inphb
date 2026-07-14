@@ -824,6 +824,8 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
     """.replace(",", " ")
             )
 
+
+
     if collecte and consentement:
         try:
             analyse_id = STOCKAGE_ANALYSES.sauvegarder(
@@ -841,6 +843,39 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
                     "Analyse sauvegardée dans Google Sheets : "
                     f"{analyse_id}"
                 )
+
+                satisfaction = st.radio(
+                    "Cette analyse t'a-t-elle semblé utile ?",
+                    [
+                        "😀 Très utile",
+                        "🙂 Utile",
+                        "😐 Moyennement utile",
+                        "🙁 Peu utile",
+                    ],
+                    horizontal=True,
+                )
+                st.markdown("---")
+                st.subheader("💬 Ton avis nous intéresse")
+
+                st.write(
+                    "Tes remarques nous aident à améliorer cet outil. "
+                    "Tu peux signaler une erreur, proposer une amélioration ou partager ton expérience."
+                )
+
+                commentaire = st.text_area(
+                    "Laisse un commentaire (facultatif)",
+                    height=120,
+                    max_chars=1000,
+                )
+
+                if st.button("📨 Envoyer mon commentaire"):
+                    print("on saubegarde")
+                    STOCKAGE_ANALYSES.sauvegarder_commentaire(analyse_id=analyse_id,
+                                                              serie=serie,
+                                                              mention=mention,
+                                                              satisfaction=satisfaction,
+                                                              commentaire=commentaire,
+                                                              version_modele="v5_distribution",)
         except (ErreurSauvegarde, ValueError) as exc:
             print(
                 "Échec de la sauvegarde Google Sheets : "

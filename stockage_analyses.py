@@ -27,11 +27,25 @@ class AnalyseCandidat:
 class StockageAnalyses(Protocol):
     def sauvegarder(self, analyse: AnalyseCandidat) -> str:
         """Sauvegarde une analyse et retourne son identifiant."""
+    
+    def sauvegarder_commentaire(
+        self,
+        *,
+        analyse_id: str,
+        serie: str,
+        mention: str,
+        satisfaction: str,
+        commentaire: str,
+        version_modele: str = "v5_distribution",
+    ) -> None:
+        ...
 
 
 class StockageDesactive:
     def sauvegarder(self, analyse: AnalyseCandidat) -> str:
         return ""
+    def sauvegarder_commentaire(self, **kwargs) -> None:
+        return 
 
 
 class StockageGoogleSheets:
@@ -50,6 +64,46 @@ class StockageGoogleSheets:
         if not self.api_secret:
             raise ValueError("Le secret Google Sheets est vide.")
 
+
+    from datetime import UTC, datetime
+
+    def sauvegarder_commentaire(
+        self,
+        *,
+        analyse_id: str,
+        serie: str,
+        mention: str,
+        satisfaction: str,
+        commentaire: str,
+        version_modele: str = "v5_distribution",
+    ) -> None:
+
+        payload = {
+            "secret": self.api_secret,
+            "commentaire": {
+                "date_utc": datetime.now(UTC).isoformat(),
+                "analyse_id": analyse_id,
+                "serie": serie,
+                "mention": mention,
+                "satisfaction": satisfaction,
+                "commentaire": commentaire.strip(),
+                "version_modele": version_modele,
+            },
+        }
+
+        response = requests.post(
+            self.web_app_url,
+            json=payload,
+            timeout=self.timeout_secondes,
+        )
+
+        response.raise_for_status()
+
+        resultat = response.json()
+
+        if not resultat.get("ok"):
+            raise ErreurSauvegarde(resultat.get("error"))
+    
     def sauvegarder(self, analyse: AnalyseCandidat) -> str:
         payload = construire_payload_google_sheets(analyse)
 
