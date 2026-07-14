@@ -50,7 +50,7 @@ st.markdown(
 )
 LOCAL_PARAMS = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx"))
 LOCAL_DB = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
-SEUIL_ADMISSIBLES = 2000
+SEUIL_ADMISSIBLES = 1700
 
 
 def creer_stockage_analyses() -> StockageAnalyses:
@@ -593,11 +593,21 @@ if not scores_tries.empty:
 #)
 consentement=True
 st.subheader("6. Comparaison avec les autres candidats")
-st.caption(
-    "Cette seconde analyse positionne chaque score dans une cohorte fictive et estime "
-    f"la chance d'entrer dans les {SEUIL_ADMISSIBLES} premiers dossiers."
+st.markdown(
+    f"""
+<div style="
+    background:#f8f9fa;
+    border-radius:8px;
+    padding:0.7rem 1rem;
+    margin-bottom:1rem;
+    font-size:0.95rem;
+    color:#495057;
+">
+📊 Le score de chaque filière est comparé à une population de référence afin d'estimer le positionnement de ton dossier parmi les <strong>{SEUIL_ADMISSIBLES} premiers.</strong>
+</div>
+""",
+    unsafe_allow_html=True,
 )
-
 if st.button("Analyser mes chances d'admissibilité", type="primary", width="stretch"):
     if int(nb_dossiers) < SEUIL_ADMISSIBLES:
         st.error(f"Le nombre de dossiers concurrents doit être au moins égal à {SEUIL_ADMISSIBLES}.")
