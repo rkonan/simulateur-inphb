@@ -5,5 +5,3 @@ __pycache__
 .env
 .streamlit/secrets.toml
 .ipynb_checkpoints
-test.py
-app_v1.py
