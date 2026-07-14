@@ -22,7 +22,7 @@ from simulateur_core import (
 )
 
 st.set_page_config(
-    page_title="Simulateur INP-HB",
+    page_title="Analyse dossier INP-HB",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -325,8 +325,8 @@ def saisir_notes_mobile(
 
     return notes_bac, moyennes
 
-
-st.title("🎓 Simulateur de dossier bachelier INP-HB")
+nb_dossiers=3000
+st.title("🎓 Analyse de dossier bachelier INP-HB")
 
 st.markdown(
     """
@@ -343,7 +343,7 @@ st.markdown(
 )
 
 st.markdown(
-    """
+    f"""
 <div style="
     background:#f6f8fa;
     border-left:4px solid #6c757d;
@@ -354,7 +354,9 @@ st.markdown(
     line-height:1.5;
     color:#343a40;
 ">
-Le simulateur calcule le score de ton dossier selon les règles propres à chaque filière, puis le compare à une population de référence issue d'un modèle statistique.
+L'outil calcule le score de ton dossier selon les règles propres à chaque filière, puis le compare à une population de référence issue d'un modèle statistique.
+<br>
+Cette analyse permet d'estimer le positionnement de ton dossier parmi les candidats susceptibles de postuler à ces filières.
 <br>
 <strong>Les résultats sont indicatifs. Ils ne garantissent pas l'admissibilité et ne remplacent pas une décision officielle de l'INP-HB.</strong>
 </div>
@@ -374,7 +376,7 @@ if largeur is None:
 EST_MOBILE = int(largeur) < 768
 
 
-nb_dossiers=3000
+
 collecte=True
 
 if not LOCAL_PARAMS.exists() or not LOCAL_DB.exists():
