@@ -8,7 +8,8 @@ from typing import Dict, Iterable, Iterator, List, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import binom
+#from scipy.stats import binom
+from binom_local import binom
 
 ALIASES_MATIERES = {
     "Mathématiques": "Maths", "Mathematiques": "Maths", "Maths": "Maths",
