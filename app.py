@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from streamlit_js_eval import streamlit_js_eval
-from simulateur_core_v1 import (
+from simulateur_core import (
     calculer_candidat,
     charger_parametres,
     evaluer_admissibilite_depuis_db,
