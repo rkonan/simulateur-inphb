@@ -193,7 +193,137 @@ def recommandation_intrinseque(scores_tries: pd.DataFrame) -> str:
 
 
 
+def saisir_notes_desktop(
+    matieres: list[str],
+    serie: str,
+) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+    """Affiche la grille large utilisée sur ordinateur."""
+    notes_bac: dict[str, float] = {}
+    moyennes: dict[str, dict[str, float]] = {}
 
+    headers = st.columns([2, 1, 1, 1, 1])
+    for colonne, entete in zip(
+        headers,
+        ["**Matière**", "**2nde**", "**1ère**", "**Terminale**", "**Bac**"],
+    ):
+        colonne.markdown(entete)
+
+    for index, matiere in enumerate(matieres):
+        colonnes = st.columns([2, 1, 1, 1, 1])
+        colonnes[0].write(matiere)
+
+        key = f"{serie}_{slug(matiere)}_{index}"
+
+        seconde = colonnes[1].number_input(
+            "2nde",
+            min_value=0.0,
+            max_value=20.0,
+            value=10.0,
+            step=0.25,
+            key=key + "s",
+            label_visibility="collapsed",
+        )
+        premiere = colonnes[2].number_input(
+            "1ère",
+            min_value=0.0,
+            max_value=20.0,
+            value=10.0,
+            step=0.25,
+            key=key + "p",
+            label_visibility="collapsed",
+        )
+        terminale = colonnes[3].number_input(
+            "Terminale",
+            min_value=0.0,
+            max_value=20.0,
+            value=10.0,
+            step=0.25,
+            key=key + "t",
+            label_visibility="collapsed",
+        )
+        bac = colonnes[4].number_input(
+            "Bac",
+            min_value=0.0,
+            max_value=20.0,
+            value=10.0,
+            step=0.25,
+            key=key + "b",
+            label_visibility="collapsed",
+        )
+
+        notes_bac[matiere] = float(bac)
+        moyennes[matiere] = {
+            "2nde": float(seconde),
+            "1ere": float(premiere),
+            "tle": float(terminale),
+        }
+
+    return notes_bac, moyennes
+
+
+def saisir_notes_mobile(
+    matieres: list[str],
+    serie: str,
+) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+    """Affiche une carte compacte et tactile pour chaque matière."""
+    notes_bac: dict[str, float] = {}
+    moyennes: dict[str, dict[str, float]] = {}
+
+    st.caption(
+        "Saisis les quatre notes de chaque matière. "
+        "Tu peux passer rapidement d'un champ au suivant avec le clavier du téléphone."
+    )
+
+    for index, matiere in enumerate(matieres):
+        key = f"{serie}_{slug(matiere)}_{index}"
+
+        with st.container(border=True):
+            st.markdown(f"#### {matiere}")
+
+            ligne_1 = st.columns(2, gap="small")
+            seconde = ligne_1[0].number_input(
+                "2nde",
+                min_value=0.0,
+                max_value=20.0,
+                value=10.0,
+                step=0.25,
+                key=key + "s",
+            )
+            premiere = ligne_1[1].number_input(
+                "1ère",
+                min_value=0.0,
+                max_value=20.0,
+                value=10.0,
+                step=0.25,
+                key=key + "p",
+            )
+
+            ligne_2 = st.columns(2, gap="small")
+            terminale = ligne_2[0].number_input(
+                "Terminale",
+                min_value=0.0,
+                max_value=20.0,
+                value=10.0,
+                step=0.25,
+                key=key + "t",
+            )
+            bac = ligne_2[1].number_input(
+                "Bac",
+                min_value=0.0,
+                max_value=20.0,
+                value=10.0,
+                step=0.25,
+                key=key + "b",
+            )
+
+        notes_bac[matiere] = float(bac)
+        moyennes[matiere] = {
+            "2nde": float(seconde),
+            "1ere": float(premiere),
+            "tle": float(terminale),
+        }
+
+    return notes_bac, moyennes
 
 
 st.title("🎓 Simulateur de dossier bachelier INP-HB")
@@ -234,13 +364,14 @@ Le simulateur calcule le score de ton dossier selon les règles propres à chaqu
 
 largeur = streamlit_js_eval(
     js_expressions="window.innerWidth",
-    key="WIDTH",
+    key="viewport_width_js",
 )
 
-if largeur and largeur < 768:
-    st.write("Mobile")
-else:
-    st.write("PC")
+if largeur is None:
+    st.info("Adaptation de l'affichage à ton écran…")
+    st.stop()
+
+EST_MOBILE = int(largeur) < 768
 
 
 nb_dossiers=3000
@@ -275,41 +406,23 @@ if not filieres:
 
 matieres = set()
 for filiere in filieres:
-    matieres.update(lignes_formule(params, filiere, serie)["matiere"].tolist())
+    matieres.update(
+        lignes_formule(params, filiere, serie)["matiere"].tolist()
+    )
 matieres = sorted(matieres)
-st.subheader("📚 3. Saisie des notes")
-#st.subheader("3. Tes notes utiles au dossier")
-notes_bac: dict[str, float] = {}
-moyennes: dict[str, dict[str, float]] = {}
-headers = st.columns([2, 1, 1, 1, 1])
-for colonne, entete in zip(
-    headers,
-    ["**Matière**", "**2nde**", "**1ère**", "**Terminale**", "**Bac**"],
-):
-    colonne.markdown(entete)
 
-for index, matiere in enumerate(matieres):
-    colonnes = st.columns([2, 1, 1, 1, 1])
-    colonnes[0].write(matiere)
-    key = f"{serie}_{slug(matiere)}_{index}"
-    seconde = colonnes[1].number_input(
-        "2nde", 0.0, 20.0, 10.0, 0.25, key=key + "s", label_visibility="collapsed"
+st.subheader("📚 3. Saisie des notes")
+
+if EST_MOBILE:
+    notes_bac, moyennes = saisir_notes_mobile(
+        matieres=matieres,
+        serie=serie,
     )
-    premiere = colonnes[2].number_input(
-        "1ère", 0.0, 20.0, 10.0, 0.25, key=key + "p", label_visibility="collapsed"
+else:
+    notes_bac, moyennes = saisir_notes_desktop(
+        matieres=matieres,
+        serie=serie,
     )
-    terminale = colonnes[3].number_input(
-        "Terminale", 0.0, 20.0, 10.0, 0.25, key=key + "t", label_visibility="collapsed"
-    )
-    bac = colonnes[4].number_input(
-        "Bac", 0.0, 20.0, 10.0, 0.25, key=key + "b", label_visibility="collapsed"
-    )
-    notes_bac[matiere] = float(bac)
-    moyennes[matiere] = {
-        "2nde": float(seconde),
-        "1ere": float(premiere),
-        "tle": float(terminale),
-    }
 
 calculs, scores = calculer_candidat(params, serie, mention, notes_bac, moyennes, filieres)
 st.subheader("🧮 4. Calcul des moyennes par matière")
