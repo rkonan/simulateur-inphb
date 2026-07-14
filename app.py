@@ -18,9 +18,10 @@ from simulateur_core import (
     lister_filieres_db,
     slug,
 )
-
+from localisation import recuperer_localisation_navigateur
 from stockage_analyses import (
     AnalyseCandidat,
+    CommentaireUtilisateur,
     ErreurSauvegarde,
     StockageAnalyses,
     StockageDesactive,
@@ -406,7 +407,7 @@ if largeur is None:
 
 EST_MOBILE = int(largeur) < 768
 
-
+localisation = recuperer_localisation_navigateur()
 
 collecte=True
 
@@ -458,6 +459,43 @@ else:
     )
 
 calculs, scores = calculer_candidat(params, serie, mention, notes_bac, moyennes, filieres)
+
+signature_courante = (
+    serie,
+    mention,
+    tuple(filieres),
+    tuple(
+        sorted(
+            (matiere, round(note, 4))
+            for matiere, note in notes_bac.items()
+        )
+    ),
+    tuple(
+        sorted(
+            (
+                matiere,
+                round(valeurs["2nde"], 4),
+                round(valeurs["1ere"], 4),
+                round(valeurs["tle"], 4),
+            )
+            for matiere, valeurs in moyennes.items()
+        )
+    ),
+)
+
+if (
+    "analyse_signature" in st.session_state
+    and st.session_state["analyse_signature"] != signature_courante
+):
+    st.session_state.pop("analyse_resultats", None)
+    st.session_state.pop("analyse_id", None)
+    st.session_state.pop("commentaire_envoye", None)
+    st.session_state.pop("analyse_notes_bac", None)
+    st.session_state.pop("analyse_moyennes", None)
+    st.session_state.pop("analyse_serie", None)
+    st.session_state.pop("analyse_mention", None)
+    st.session_state.pop("sauvegarde_analyse_en_attente", None)
+
 st.subheader("🧮 4. Calcul des moyennes par matière")
 #st.subheader("4. Vérification des calculs MC et MGM")
 st.dataframe(
@@ -588,6 +626,35 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
     # frame = pd.DataFrame(resultats).sort_values(
     #     "probabilite", ascending=False, na_position="last"
     # )
+
+    # Les résultats sont mémorisés immédiatement.
+    # L'écriture Google Sheets sera tentée après leur affichage.
+    st.session_state["analyse_signature"] = signature_courante
+    st.session_state["analyse_resultats"] = resultats
+    st.session_state["analyse_nb_dossiers"] = int(nb_dossiers)
+    st.session_state["analyse_seuil"] = int(SEUIL_ADMISSIBLES)
+    st.session_state["analyse_notes_bac"] = notes_bac
+    st.session_state["analyse_moyennes"] = moyennes
+    st.session_state["analyse_serie"] = serie
+    st.session_state["analyse_mention"] = mention
+    st.session_state["localisation"] = localisation
+    st.session_state["sauvegarde_analyse_en_attente"] = bool(
+        collecte and consentement
+    )
+    st.session_state["commentaire_envoye"] = False
+
+
+resultats_session = st.session_state.get("analyse_resultats")
+
+if resultats_session:
+    resultats = resultats_session
+    nb_dossiers = int(
+        st.session_state.get("analyse_nb_dossiers", nb_dossiers)
+    )
+    SEUIL_ADMISSIBLES = int(
+        st.session_state.get("analyse_seuil", SEUIL_ADMISSIBLES)
+    )
+
     frame = pd.DataFrame(resultats).sort_values(
         "marge", ascending=False, na_position="last"
     )
@@ -635,7 +702,7 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
                     st.markdown(f"**{niveau}**")
                     st.markdown(f"**{commentaire}**")
                     # st.markdown(f"## {formater_probabilite(ligne.get('probabilite'))}")
-                    
+
                     if pd.notna(ligne.get("rang_moyen")):
                         st.caption(
                             f"Rang moyen : {ligne['rang_moyen']:.0f} / {int(nb_dossiers):,}".replace(",", " ")
@@ -758,7 +825,7 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
         }
     )
 
-    
+
 
     st.dataframe(
         tableau_synthese,
@@ -824,60 +891,119 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
     """.replace(",", " ")
             )
 
-
-
-    if collecte and consentement:
-        try:
-            analyse_id = STOCKAGE_ANALYSES.sauvegarder(
-                AnalyseCandidat(
-                    serie=serie,
-                    mention=mention,
-                    notes_bac=notes_bac,
-                    moyennes=moyennes,
-                    resultats=resultats,
-                    version_modele="v5_distribution",
-                )
+# -----------------------------------------------------------------------------
+# Sauvegarde distante après affichage des résultats
+# -----------------------------------------------------------------------------
+if (
+    st.session_state.get("sauvegarde_analyse_en_attente", False)
+    and not st.session_state.get("analyse_id")
+):
+    try:
+        analyse_id = STOCKAGE_ANALYSES.sauvegarder(
+            AnalyseCandidat(
+                serie=str(st.session_state["analyse_serie"]),
+                mention=str(st.session_state["analyse_mention"]),
+                notes_bac=st.session_state["analyse_notes_bac"],
+                moyennes=st.session_state["analyse_moyennes"],
+                resultats=st.session_state["analyse_resultats"],
+                localisation=st.session_state["localisation"],
+                version_modele="v5_distribution",
             )
-            if analyse_id:
-                print(
-                    "Analyse sauvegardée dans Google Sheets : "
-                    f"{analyse_id}"
-                )
+        )
 
-                satisfaction = st.radio(
-                    "Cette analyse t'a-t-elle semblé utile ?",
-                    [
-                        "😀 Très utile",
-                        "🙂 Utile",
-                        "😐 Moyennement utile",
-                        "🙁 Peu utile",
-                    ],
-                    horizontal=True,
-                )
-                st.markdown("---")
-                st.subheader("💬 Ton avis nous intéresse")
-
-                st.write(
-                    "Tes remarques nous aident à améliorer cet outil. "
-                    "Tu peux signaler une erreur, proposer une amélioration ou partager ton expérience."
-                )
-
-                commentaire = st.text_area(
-                    "Laisse un commentaire (facultatif)",
-                    height=120,
-                    max_chars=1000,
-                )
-
-                if st.button("📨 Envoyer mon commentaire"):
-                    print("on saubegarde")
-                    STOCKAGE_ANALYSES.sauvegarder_commentaire(analyse_id=analyse_id,
-                                                              serie=serie,
-                                                              mention=mention,
-                                                              satisfaction=satisfaction,
-                                                              commentaire=commentaire,
-                                                              version_modele="v5_distribution",)
-        except (ErreurSauvegarde, ValueError) as exc:
+        if analyse_id:
+            st.session_state["analyse_id"] = analyse_id
             print(
-                "Échec de la sauvegarde Google Sheets : "
-                f"{exc}"
+                "Analyse sauvegardée dans Google Sheets : "
+                f"{analyse_id}"
             )
+
+    except (ErreurSauvegarde, ValueError) as exc:
+        print(
+            "Échec de la sauvegarde Google Sheets : "
+            f"{exc}"
+        )
+
+    finally:
+        # Une seule tentative automatique par analyse.
+        st.session_state["sauvegarde_analyse_en_attente"] = False
+
+
+# -----------------------------------------------------------------------------
+# Zone de retour utilisateur
+# -----------------------------------------------------------------------------
+analyse_id_courant = st.session_state.get("analyse_id", "")
+
+if analyse_id_courant:
+    st.divider()
+    st.subheader("💬 Ton avis nous intéresse")
+
+    st.write(
+        "Tes remarques nous aident à améliorer cet outil. "
+        "Tu peux signaler une erreur, proposer une amélioration "
+        "ou partager ton expérience."
+    )
+
+    if st.session_state.get("commentaire_envoye", False):
+        st.success("Merci, ton avis a bien été enregistré.")
+    else:
+        with st.form("formulaire_commentaire", clear_on_submit=True):
+            satisfaction = st.radio(
+                "Cette analyse t'a-t-elle semblé utile ?",
+                [
+                    "😀 Très utile",
+                    "🙂 Utile",
+                    "😐 Moyennement utile",
+                    "🙁 Peu utile",
+                ],
+                horizontal=not EST_MOBILE,
+            )
+
+            commentaire = st.text_area(
+                "Laisse un commentaire",
+                placeholder=(
+                    "Signale une erreur, propose une amélioration "
+                    "ou partage ton expérience."
+                ),
+                height=120,
+                max_chars=1000,
+            )
+
+            envoyer_commentaire = st.form_submit_button(
+                "📨 Envoyer mon avis",
+                type="secondary",
+                width="stretch",
+            )
+
+        if envoyer_commentaire:
+            if not commentaire.strip():
+                st.warning("Écris un commentaire avant l'envoi.")
+            else:
+                try:
+                    STOCKAGE_ANALYSES.sauvegarder_commentaire(
+                        CommentaireUtilisateur(
+                            analyse_id=analyse_id_courant,
+                            serie=str(st.session_state.get("analyse_serie", serie)),
+                            mention=str(st.session_state.get("analyse_mention", mention)),
+                            satisfaction=satisfaction,
+                            commentaire=commentaire,
+                            version_modele="v5_distribution",
+                        )
+                    )
+
+                    st.session_state["commentaire_envoye"] = True
+                    print(
+                        "Commentaire sauvegardé pour l'analyse : "
+                        f"{analyse_id_courant}"
+                    )
+                    st.rerun()
+
+                except (ErreurSauvegarde, ValueError) as exc:
+                    st.error(
+                        "Ton avis n'a pas pu être enregistré. "
+                        "Réessaie dans quelques instants."
+                    )
+                    print(
+                        "Échec de la sauvegarde du commentaire : "
+                        f"{exc}"
+                    )

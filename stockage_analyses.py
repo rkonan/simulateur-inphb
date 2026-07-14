@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol, Sequence
 
+from localisation import LocalisationNavigateur
+
 import requests
 
 
 class ErreurSauvegarde(RuntimeError):
-    """Erreur technique lors de la sauvegarde d'une analyse."""
+    """Erreur technique lors de la sauvegarde d'une analyse ou d'un commentaire."""
 
 
 @dataclass(frozen=True)
@@ -21,31 +23,40 @@ class AnalyseCandidat:
     notes_bac: Mapping[str, float]
     moyennes: Mapping[str, Mapping[str, float]]
     resultats: Sequence[Mapping[str, Any]]
+    localisation: LocalisationNavigateur | None = None
+    version_modele: str = "v5_distribution"
+
+
+@dataclass(frozen=True)
+class CommentaireUtilisateur:
+    analyse_id: str
+    serie: str
+    mention: str
+    satisfaction: str
+    commentaire: str
     version_modele: str = "v5_distribution"
 
 
 class StockageAnalyses(Protocol):
     def sauvegarder(self, analyse: AnalyseCandidat) -> str:
         """Sauvegarde une analyse et retourne son identifiant."""
-    
+
     def sauvegarder_commentaire(
         self,
-        *,
-        analyse_id: str,
-        serie: str,
-        mention: str,
-        satisfaction: str,
-        commentaire: str,
-        version_modele: str = "v5_distribution",
+        commentaire: CommentaireUtilisateur,
     ) -> None:
-        ...
+        """Sauvegarde un commentaire lié à une analyse."""
 
 
 class StockageDesactive:
     def sauvegarder(self, analyse: AnalyseCandidat) -> str:
         return ""
-    def sauvegarder_commentaire(self, **kwargs) -> None:
-        return 
+
+    def sauvegarder_commentaire(
+        self,
+        commentaire: CommentaireUtilisateur,
+    ) -> None:
+        return None
 
 
 class StockageGoogleSheets:
@@ -64,53 +75,11 @@ class StockageGoogleSheets:
         if not self.api_secret:
             raise ValueError("Le secret Google Sheets est vide.")
 
-
-    from datetime import UTC, datetime
-
-    def sauvegarder_commentaire(
-        self,
-        *,
-        analyse_id: str,
-        serie: str,
-        mention: str,
-        satisfaction: str,
-        commentaire: str,
-        version_modele: str = "v5_distribution",
-    ) -> None:
-
-        payload = {
-            "secret": self.api_secret,
-            "commentaire": {
-                "date_utc": datetime.now(UTC).isoformat(),
-                "analyse_id": analyse_id,
-                "serie": serie,
-                "mention": mention,
-                "satisfaction": satisfaction,
-                "commentaire": commentaire.strip(),
-                "version_modele": version_modele,
-            },
-        }
-
-        response = requests.post(
-            self.web_app_url,
-            json=payload,
-            timeout=self.timeout_secondes,
-        )
-
-        response.raise_for_status()
-
-        resultat = response.json()
-
-        if not resultat.get("ok"):
-            raise ErreurSauvegarde(resultat.get("error"))
-    
-    def sauvegarder(self, analyse: AnalyseCandidat) -> str:
-        payload = construire_payload_google_sheets(analyse)
-
+    def _poster(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         try:
             response = requests.post(
                 self.web_app_url,
-                json={"secret": self.api_secret, **payload},
+                json={"secret": self.api_secret, **dict(payload)},
                 timeout=self.timeout_secondes,
                 allow_redirects=True,
             )
@@ -137,25 +106,53 @@ class StockageGoogleSheets:
                 str(contenu.get("error", "Échec de sauvegarde inconnu."))
             )
 
+        return contenu
+
+    def sauvegarder(self, analyse: AnalyseCandidat) -> str:
+        payload = construire_payload_google_sheets(analyse)
+        contenu = self._poster(payload)
         return str(
             contenu.get("analyse_id")
             or payload["profil"]["analyse_id"]
+        )
+
+    def sauvegarder_commentaire(
+        self,
+        commentaire: CommentaireUtilisateur,
+    ) -> None:
+        texte = commentaire.commentaire.strip()
+        satisfaction = commentaire.satisfaction.strip()
+
+        if not texte and not satisfaction:
+            raise ValueError(
+                "Le commentaire et la satisfaction sont vides."
+            )
+
+        self._poster(
+            {
+                "commentaire": {
+                    "date_utc": datetime.now(UTC).isoformat(),
+                    "analyse_id": commentaire.analyse_id,
+                    "serie": commentaire.serie,
+                    "mention": commentaire.mention,
+                    "satisfaction": satisfaction,
+                    "commentaire": texte,
+                    "version_modele": commentaire.version_modele,
+                }
+            }
         )
 
 
 def _scalaire_json(value: Any) -> Any:
     if value is None:
         return None
-
     if hasattr(value, "item"):
         try:
             return value.item()
         except (AttributeError, ValueError):
             pass
-
     if isinstance(value, float) and value != value:
         return None
-
     return value
 
 
@@ -174,6 +171,11 @@ def _profil_canonique(analyse: AnalyseCandidat) -> dict[str, Any]:
             }
             for matiere, valeurs in sorted(analyse.moyennes.items())
         },
+        "localisation": (
+            analyse.localisation.en_dict()
+            if analyse.localisation is not None
+            else {}
+        ),
     }
 
 
@@ -184,20 +186,18 @@ def _aplatir_notes(analyse: AnalyseCandidat) -> dict[str, float | None]:
     for matiere in matieres:
         valeurs = analyse.moyennes.get(matiere, {})
         colonnes[f"{matiere}_2nde"] = (
-            float(valeurs["2nde"])
-            if valeurs.get("2nde") is not None else None
+            float(valeurs["2nde"]) if valeurs.get("2nde") is not None else None
         )
         colonnes[f"{matiere}_1ere"] = (
-            float(valeurs["1ere"])
-            if valeurs.get("1ere") is not None else None
+            float(valeurs["1ere"]) if valeurs.get("1ere") is not None else None
         )
         colonnes[f"{matiere}_Terminale"] = (
-            float(valeurs["tle"])
-            if valeurs.get("tle") is not None else None
+            float(valeurs["tle"]) if valeurs.get("tle") is not None else None
         )
         colonnes[f"{matiere}_Bac"] = (
             float(analyse.notes_bac[matiere])
-            if analyse.notes_bac.get(matiere) is not None else None
+            if analyse.notes_bac.get(matiere) is not None
+            else None
         )
 
     return colonnes
@@ -231,16 +231,19 @@ def construire_payload_google_sheets(
         "mention": str(analyse.mention),
         "version_modele": str(analyse.version_modele),
         **_aplatir_notes(analyse),
+        "localisation_json": (
+            analyse.localisation.en_json()
+            if analyse.localisation is not None
+            else "{}"
+        ),
         "profil_json": profil_json,
     }
 
     simulations: list[dict[str, Any]] = []
-
     for resultat in analyse.resultats:
         filiere = str(resultat.get("filiere", "")).strip()
         if not filiere:
             continue
-
         simulations.append(
             {
                 "simulation_id": f"{analyse_id}:{filiere}",
@@ -257,15 +260,9 @@ def construire_payload_google_sheets(
                 "rang_p10": _scalaire_json(resultat.get("rang_p10")),
                 "rang_p90": _scalaire_json(resultat.get("rang_p90")),
                 "percentile": _scalaire_json(resultat.get("percentile")),
-                "population_reference": _scalaire_json(
-                    resultat.get("population")
-                ),
-                "dossiers_concurrents": _scalaire_json(
-                    resultat.get("dossiers_concurrents")
-                ),
-                "seuil_admissibles": _scalaire_json(
-                    resultat.get("seuil_admissibles")
-                ),
+                "population_reference": _scalaire_json(resultat.get("population")),
+                "dossiers_concurrents": _scalaire_json(resultat.get("dossiers_concurrents")),
+                "seuil_admissibles": _scalaire_json(resultat.get("seuil_admissibles")),
                 "version_modele": str(analyse.version_modele),
             }
         )
