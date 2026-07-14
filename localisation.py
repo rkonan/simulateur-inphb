@@ -27,7 +27,6 @@ class LocalisationNavigateur:
     code_pays: str | None = None
     region: str | None = None
     ville: str | None = None
-    source_localisation: str | None = None
 
     def en_dict(self) -> dict[str, Any]:
         return {
@@ -49,93 +48,35 @@ def recuperer_localisation_navigateur(
     *,
     key: str = "localisation_navigateur",
 ) -> LocalisationNavigateur | None:
-    """Utilise ipwho.is depuis le navigateur, avec repli navigateur.
+    """Lit des informations non sensibles depuis le navigateur.
 
-    Le résultat IP est gardé dans sessionStorage. Au premier passage, seules
-    les données du navigateur peuvent être disponibles. Au rerun suivant,
-    les données IP sont utilisées si l'appel a réussi.
+    Le premier passage peut retourner ``None`` le temps que le composant
+    JavaScript transmette les données à Streamlit.
     """
 
     expression = """
-(() => {
-    const fallback = {
-        fuseau_horaire:
-            Intl.DateTimeFormat().resolvedOptions().timeZone || null,
-        langue: navigator.language || null,
-        langues: Array.isArray(navigator.languages)
+JSON.stringify({
+    fuseau_horaire:
+        Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+    langue:
+        navigator.language || null,
+    langues:
+        Array.isArray(navigator.languages)
             ? navigator.languages
             : null,
-        largeur_ecran: Number.isFinite(screen.width)
+    largeur_ecran:
+        Number.isFinite(screen.width)
             ? screen.width
             : null,
-        hauteur_ecran: Number.isFinite(screen.height)
+    hauteur_ecran:
+        Number.isFinite(screen.height)
             ? screen.height
             : null,
-        largeur_fenetre: Number.isFinite(window.innerWidth)
+    largeur_fenetre:
+        Number.isFinite(window.innerWidth)
             ? window.innerWidth
-            : null,
-        pays: null,
-        code_pays: null,
-        region: null,
-        ville: null,
-        source_localisation: "navigateur"
-    };
-
-    const cacheKey = "inphb_ipwho_localisation_v1";
-    const cached = sessionStorage.getItem(cacheKey);
-
-    if (cached) {
-        try {
-            return JSON.stringify({
-                ...fallback,
-                ...JSON.parse(cached),
-                source_localisation: "ipwho.is"
-            });
-        } catch (_) {
-            sessionStorage.removeItem(cacheKey);
-        }
-    }
-
-    const pendingKey = cacheKey + "_pending";
-
-    if (!sessionStorage.getItem(pendingKey)) {
-        sessionStorage.setItem(pendingKey, "1");
-
-        fetch("https://ipwho.is/", {
-            method: "GET",
-            cache: "no-store"
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error("HTTP " + response.status);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (!data || data.success === false) {
-                throw new Error("Réponse ipwho.is invalide");
-            }
-
-            sessionStorage.setItem(
-                cacheKey,
-                JSON.stringify({
-                    pays: data.country || null,
-                    code_pays: data.country_code || null,
-                    region: data.region || null,
-                    ville: data.city || null
-                })
-            );
-        })
-        .catch(() => {
-            sessionStorage.removeItem(cacheKey);
-        })
-        .finally(() => {
-            sessionStorage.removeItem(pendingKey);
-        });
-    }
-
-    return JSON.stringify(fallback);
-})()
+            : null
+})
 """
 
     valeur = streamlit_js_eval(
@@ -180,14 +121,8 @@ def recuperer_localisation_navigateur(
             donnees.get("largeur_fenetre")
         ),
         type_appareil=type_appareil,
-        pays=donnees.get("pays"),
-        code_pays=donnees.get("code_pays"),
-        region=donnees.get("region"),
-        ville=donnees.get("ville"),
-        source_localisation=donnees.get(
-            "source_localisation"
-        ),
     )
+
 
 def _entier_ou_none(value: Any) -> int | None:
     try:
