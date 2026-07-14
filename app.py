@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from streamlit_js_eval import streamlit_js_eval
 from simulateur_core import (
     calculer_candidat,
     charger_parametres,
@@ -191,6 +192,10 @@ def recommandation_intrinseque(scores_tries: pd.DataFrame) -> str:
     )
 
 
+
+
+
+
 st.title("🎓 Simulateur de dossier bachelier INP-HB")
 
 st.markdown(
@@ -226,6 +231,16 @@ Le simulateur calcule le score de ton dossier selon les règles propres à chaqu
 """,
     unsafe_allow_html=True,
 )
+
+largeur = streamlit_js_eval(
+    js_expressions="window.innerWidth",
+    key="WIDTH",
+)
+
+if largeur and largeur < 768:
+    st.write("Mobile")
+else:
+    st.write("PC")
 
 
 nb_dossiers=3000
