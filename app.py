@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from streamlit_js_eval import streamlit_js_eval
-from simulateur_core import (
+from simulateur_core_v1 import (
     calculer_candidat,
     charger_parametres,
     evaluer_admissibilite_depuis_db,
@@ -371,7 +371,7 @@ st.markdown(
 )
 
 st.markdown(
-    f"""
+    """
 <div style="
     background:#f6f8fa;
     border-left:4px solid #6c757d;
@@ -382,15 +382,18 @@ st.markdown(
     line-height:1.5;
     color:#343a40;
 ">
-L'outil calcule le score de ton dossier selon les règles propres à chaque filière, puis le compare à une population de référence issue d'un modèle statistique.
+L'outil calcule le score de ton dossier selon les règles propres à chaque filière, puis le compare à une population de référence construite à partir d'un modèle statistique.
 <br>
 Cette analyse permet d'estimer le positionnement de ton dossier parmi les candidats susceptibles de postuler à ces filières.
-<br>
-<strong>Les résultats sont indicatifs. Ils ne garantissent pas l'admissibilité et ne remplacent pas une décision officielle de l'INP-HB.</strong>
+<br><br>
+<span style="color:#b91c1c; font-weight:700;">
+⚠️ Les résultats sont fournis à titre indicatif. Ils ne garantissent pas l'admissibilité et ne remplacent pas une décision officielle de l'INP-HB.
+</span>
 </div>
 """,
     unsafe_allow_html=True,
 )
+
 
 largeur = streamlit_js_eval(
     js_expressions="window.innerWidth",
