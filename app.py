@@ -16,9 +16,15 @@ from simulateur_core import (
     filieres_autorisees_serie,
     lignes_formule,
     lister_filieres_db,
-    sauvegarder_simulation_anonyme,
     slug,
-    stats_collecte,
+)
+
+from stockage_analyses import (
+    AnalyseCandidat,
+    ErreurSauvegarde,
+    StockageAnalyses,
+    StockageDesactive,
+    StockageGoogleSheets,
 )
 
 st.set_page_config(
@@ -43,8 +49,30 @@ st.markdown(
 )
 LOCAL_PARAMS = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx"))
 LOCAL_DB = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
-COLLECTE_DB = Path(os.getenv("INPHB_COLLECTE_DB", "data/simulations_anonymes.db"))
 SEUIL_ADMISSIBLES = 2000
+
+
+def creer_stockage_analyses() -> StockageAnalyses:
+    """Construit le moteur de sauvegarde configuré pour l'application."""
+    try:
+        web_app_url = str(st.secrets["GOOGLE_SHEETS_WEB_APP_URL"])
+        api_secret = str(st.secrets["GOOGLE_SHEETS_API_SECRET"])
+    except (KeyError, FileNotFoundError):
+        print("Collecte Google Sheets désactivée : secrets absents.")
+        return StockageDesactive()
+
+    try:
+        return StockageGoogleSheets(
+            web_app_url=web_app_url,
+            api_secret=api_secret,
+            timeout_secondes=15,
+        )
+    except ValueError as exc:
+        print(f"Collecte Google Sheets désactivée : {exc}")
+        return StockageDesactive()
+
+
+STOCKAGE_ANALYSES = creer_stockage_analyses()
 
 
 def formater_probabilite(valeur: float | None) -> str:
@@ -794,13 +822,24 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
             )
 
     if collecte and consentement:
-        sauvegarder_simulation_anonyme(
-            COLLECTE_DB,
-            serie,
-            mention,
-            notes_bac,
-            moyennes,
-            resultats,
-            version_modele="v5_distribution",
-        )
-        #st.info("Profil enregistré sous forme anonymisée et dédupliquée par SHA-256.")
+        try:
+            analyse_id = STOCKAGE_ANALYSES.sauvegarder(
+                AnalyseCandidat(
+                    serie=serie,
+                    mention=mention,
+                    notes_bac=notes_bac,
+                    moyennes=moyennes,
+                    resultats=resultats,
+                    version_modele="v5_distribution",
+                )
+            )
+            if analyse_id:
+                print(
+                    "Analyse sauvegardée dans Google Sheets : "
+                    f"{analyse_id}"
+                )
+        except (ErreurSauvegarde, ValueError) as exc:
+            print(
+                "Échec de la sauvegarde Google Sheets : "
+                f"{exc}"
+            )

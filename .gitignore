@@ -5,3 +5,10 @@ __pycache__
 .env
 .streamlit/secrets.toml
 .ipynb_checkpoints
+secrets.toml
+app_v1.py
+app_v2.py
+simulateur_core_v1.py
+test_google_sheet_1.py
+test_google_sheet.py
+test.py

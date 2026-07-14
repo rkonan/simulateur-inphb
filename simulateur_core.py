@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 import unicodedata
 from dataclasses import dataclass
@@ -568,70 +566,3 @@ def evaluer_candidat_depuis_db(
         nb_dossiers_concurrents=nb_concurrents,
         seuil_admissibles=nb_places,
     )
-
-
-def initialiser_db_collecte(path: str | Path) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as con:
-        con.executescript("""
-        CREATE TABLE IF NOT EXISTS profils(
-            sha256 TEXT PRIMARY KEY,
-            serie TEXT NOT NULL,
-            mention TEXT NOT NULL,
-            profil_json TEXT NOT NULL,
-            date_creation TEXT DEFAULT CURRENT_TIMESTAMP,
-            nb_utilisations INTEGER DEFAULT 1
-        );
-        CREATE TABLE IF NOT EXISTS simulations(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sha256 TEXT NOT NULL,
-            filiere TEXT NOT NULL,
-            score REAL,
-            probabilite REAL,
-            rang_moyen REAL,
-            version_modele TEXT,
-            date_simulation TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-
-
-def sauvegarder_simulation_anonyme(
-    path: str | Path,
-    serie: str,
-    mention: str,
-    notes_bac: Dict,
-    moyennes: Dict,
-    resultats: List[Dict],
-    version_modele: str = "v3",
-) -> str:
-    initialiser_db_collecte(path)
-    profil = {"serie": serie, "mention": mention, "notes_bac": notes_bac, "moyennes": moyennes}
-    canonical = json.dumps(profil, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    sha = hashlib.sha256(canonical.encode()).hexdigest()
-    with sqlite3.connect(path) as con:
-        exists = con.execute("SELECT 1 FROM profils WHERE sha256=?", (sha,)).fetchone()
-        if exists:
-            con.execute("UPDATE profils SET nb_utilisations=nb_utilisations+1 WHERE sha256=?", (sha,))
-        else:
-            con.execute(
-                "INSERT INTO profils(sha256,serie,mention,profil_json) VALUES(?,?,?,?)",
-                (sha, serie, mention, canonical),
-            )
-        con.executemany(
-            "INSERT INTO simulations(sha256,filiere,score,probabilite,rang_moyen,version_modele) VALUES(?,?,?,?,?,?)",
-            [
-                (sha, r["filiere"], r.get("score"), r.get("probabilite"), r.get("rang_moyen"), version_modele)
-                for r in resultats
-            ],
-        )
-    return sha
-
-
-def stats_collecte(path: str | Path) -> Dict[str, int]:
-    if not Path(path).exists():
-        return {"profils_uniques": 0, "simulations": 0}
-    with sqlite3.connect(path) as con:
-        return {
-            "profils_uniques": con.execute("SELECT COUNT(*) FROM profils").fetchone()[0],
-            "simulations": con.execute("SELECT COUNT(*) FROM simulations").fetchone()[0],
-        }
