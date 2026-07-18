@@ -54,6 +54,7 @@ def slug(value: str) -> str:
 class SimParams:
     fichier_excel: Path
     coeffs_bac: Dict[str, Dict[str, float]]
+    groupes_score_bac: Dict[str, Dict[str, Tuple[Tuple[str, float], ...]]]
     coeffs_inphb: pd.DataFrame
     places: pd.DataFrame
     mentions: pd.DataFrame
@@ -63,23 +64,81 @@ class SimParams:
 
 def charger_parametres(fichier_excel: str | Path) -> SimParams:
     path = Path(fichier_excel)
-    bac = pd.read_excel(path, sheet_name="coefficients_bac").dropna(subset=["serie", "matiere", "coefficient"])
+    bac = pd.read_excel(path, sheet_name="coefficients_bac").dropna(
+        subset=["serie", "matiere", "coefficient"]
+    )
     coeffs_bac: Dict[str, Dict[str, float]] = {}
+
     for _, row in bac.iterrows():
-        coeffs_bac.setdefault(str(row["serie"]).strip(), {})[canon(row["matiere"])] = float(row["coefficient"])
+        serie = str(row["serie"]).strip()
+        matiere = canon(row["matiere"])
+        coefficient = float(row["coefficient"])
+
+        if matiere in coeffs_bac.setdefault(serie, {}):
+            raise ValueError(
+                f"Matière BAC dupliquée après normalisation : {serie} / {matiere}."
+            )
+        coeffs_bac[serie][matiere] = coefficient
+
+    groupes_df = pd.read_excel(path, sheet_name="groupes_matieres").dropna(
+        subset=["serie", "matiere_bac", "groupe_inphb"]
+    )
+    colonnes_requises = {"serie", "matiere_bac", "groupe_inphb", "poids"}
+    manquantes = colonnes_requises.difference(groupes_df.columns)
+    if manquantes:
+        raise ValueError(
+            "Colonnes manquantes dans groupes_matieres : "
+            + ", ".join(sorted(manquantes))
+        )
+
+    groupes_temp: Dict[str, Dict[str, List[Tuple[str, float]]]] = {}
+    for _, row in groupes_df.iterrows():
+        serie = str(row["serie"]).strip()
+        matiere = canon(row["matiere_bac"])
+        groupe = canon(row["groupe_inphb"])
+        poids = pd.to_numeric(row["poids"], errors="coerce")
+
+        if serie not in coeffs_bac:
+            raise ValueError(
+                f"Série inconnue dans groupes_matieres : {serie}."
+            )
+        if matiere not in coeffs_bac[serie]:
+            raise ValueError(
+                f"Matière absente de coefficients_bac : {serie} / {matiere}."
+            )
+        if pd.isna(poids) or float(poids) <= 0:
+            raise ValueError(
+                f"Poids invalide dans groupes_matieres : {serie} / {matiere} / {groupe}."
+            )
+
+        lignes = groupes_temp.setdefault(serie, {}).setdefault(matiere, [])
+        if any(g == groupe for g, _ in lignes):
+            raise ValueError(
+                f"Mapping dupliqué dans groupes_matieres : {serie} / {matiere} / {groupe}."
+            )
+        lignes.append((groupe, float(poids)))
+
+    groupes_score_bac: Dict[str, Dict[str, Tuple[Tuple[str, float], ...]]] = {}
+    for serie, matieres in coeffs_bac.items():
+        groupes_score_bac[serie] = {}
+        for matiere, coefficient_bac in matieres.items():
+            mappings = groupes_temp.get(serie, {}).get(matiere)
+            groupes_score_bac[serie][matiere] = tuple(
+                mappings if mappings else [(matiere, float(coefficient_bac))]
+            )
 
     inp = pd.read_excel(path, sheet_name="coefficients_inphb")
     inp["matiere"] = inp["matiere"].map(canon)
     return SimParams(
         fichier_excel=path,
         coeffs_bac=coeffs_bac,
+        groupes_score_bac=groupes_score_bac,
         coeffs_inphb=inp,
         places=pd.read_excel(path, sheet_name="places_estimees"),
         mentions=pd.read_excel(path, sheet_name="mentions_inphb"),
         stats_series=pd.read_excel(path, sheet_name="stats_series_2025"),
         eligibilite=pd.read_excel(path, sheet_name="eligibilite_inphb"),
     )
-
 
 def formules_dossier(params: SimParams) -> pd.DataFrame:
     df = params.coeffs_inphb.copy()
@@ -350,10 +409,24 @@ def generer_notes_bac_pour_mention(
     low, high = bornes_mention(mention, params.mentions)
     target = float(rng.uniform(low + 0.05, min(high - 0.05, 19.95)))
     biases = BIAIS_SERIE.get(serie, {})
-    raw = {
-        m: float(np.clip(target + biases.get(m, 0) + rng.normal(0, sigma_matiere), 0, 20))
-        for m in coeffs
-    }
+    raw = {}
+    for matiere in coeffs:
+        mappings = params.groupes_score_bac.get(serie, {}).get(
+            matiere, ((matiere, float(coeffs[matiere])),)
+        )
+        biais = biases.get(matiere)
+        if biais is None:
+            biais = max(
+                (biases.get(groupe, 0.0) for groupe, _ in mappings),
+                default=0.0,
+            )
+        raw[matiere] = float(
+            np.clip(
+                target + float(biais) + rng.normal(0, sigma_matiere),
+                0,
+                20,
+            )
+        )
     return ajuster_notes_vers_moyenne(raw, coeffs, target)
 
 
@@ -378,6 +451,113 @@ def calculer_mc_mgm(note_bac: float, moyennes: Dict[str, float]) -> Tuple[float,
     return round(float(mc), 4), round(float(mgm), 4)
 
 
+def construire_mgm_groupes(
+    mgm_detail: Dict[str, float],
+    serie: str,
+    params: SimParams,
+) -> Dict[str, float]:
+    """Construit les MGM utilisées dans les formules INP-HB.
+
+    Les notes restent saisies et stockées au niveau des matières réelles du bac.
+    Chaque groupe synthétique (par exemple ``MT``) est une moyenne pondérée par
+    les poids définis dans l'onglet ``groupes_matieres``. Par défaut, ces poids
+    reprennent les coefficients du bac.
+
+    Une épreuve combinée peut alimenter plusieurs groupes, par exemple une ligne
+    ``Maths & Sciences Physiques`` déclarée ``Maths|SP``.
+    """
+    if serie not in params.coeffs_bac:
+        raise ValueError(f"Série inconnue dans coefficients_bac : {serie}")
+
+    numerateurs: Dict[str, float] = {}
+    denominateurs: Dict[str, float] = {}
+
+    for matiere, valeur in mgm_detail.items():
+        if matiere not in params.coeffs_bac[serie]:
+            continue
+
+        coefficient_bac = float(params.coeffs_bac[serie][matiere])
+        mappings = params.groupes_score_bac.get(serie, {}).get(
+            matiere,
+            ((matiere, coefficient_bac),),
+        )
+
+        for groupe, poids in mappings:
+            numerateurs[groupe] = (
+                numerateurs.get(groupe, 0.0) + float(valeur) * float(poids)
+            )
+            denominateurs[groupe] = (
+                denominateurs.get(groupe, 0.0) + float(poids)
+            )
+
+    groupes_mgm = dict(mgm_detail)
+    for groupe, numerateur in numerateurs.items():
+        denominateur = denominateurs[groupe]
+        if denominateur > 0:
+            groupes_mgm[groupe] = round(numerateur / denominateur, 4)
+
+    return groupes_mgm
+
+
+def matieres_reelles_pour_formules(
+    params: SimParams,
+    serie: str,
+    filieres: Iterable[str],
+) -> List[str]:
+    """Retourne les matières réelles à saisir pour les filières demandées."""
+    groupes_requis: set[str] = set()
+    for filiere in filieres:
+        try:
+            groupes_requis.update(
+                lignes_formule(params, filiere, serie)["matiere"]
+                .map(canon)
+                .astype(str)
+                .tolist()
+            )
+        except ValueError:
+            continue
+
+    matieres = []
+    for matiere in params.coeffs_bac.get(serie, {}):
+        mappings = params.groupes_score_bac.get(serie, {}).get(
+            matiere,
+            ((matiere, float(params.coeffs_bac[serie][matiere])),),
+        )
+        if any(groupe in groupes_requis for groupe, _ in mappings):
+            matieres.append(matiere)
+
+    return sorted(matieres)
+
+
+def detail_groupes_score(
+    mgm_detail: Dict[str, float],
+    serie: str,
+    params: SimParams,
+) -> pd.DataFrame:
+    """Produit le détail de construction des groupes synthétiques."""
+    lignes = []
+    for matiere, valeur in mgm_detail.items():
+        coefficient_bac = float(
+            params.coeffs_bac.get(serie, {}).get(matiere, 0.0)
+        )
+        mappings = params.groupes_score_bac.get(serie, {}).get(
+            matiere, ((matiere, coefficient_bac),)
+        )
+        for groupe, poids in mappings:
+            lignes.append(
+                {
+                    "Groupe score": groupe,
+                    "Matière BAC": matiere,
+                    "MGM matière": round(float(valeur), 4),
+                    "Coefficient BAC": coefficient_bac,
+                    "Poids groupe": float(poids),
+                    "Contribution": round(float(valeur) * float(poids), 4),
+                }
+            )
+
+    return pd.DataFrame(lignes)
+
+
 def moyenne_dossier_inphb(mgm: Dict[str, float], params: SimParams, filiere: str, serie: str) -> float:
     df = lignes_formule(params, filiere, serie)
     denominator = denominateur_formule(params, filiere, serie)
@@ -398,10 +578,12 @@ def calculer_candidat(
     moyennes: Dict[str, Dict[str, float]],
     filieres: Iterable[str],
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
-    rows, mgm = [], {}
+    del mention  # La mention est informative lors d'une saisie réelle.
+    rows, mgm_detail = [], {}
+
     for mat in sorted(notes_bac):
         mc, val = calculer_mc_mgm(notes_bac[mat], moyennes[mat])
-        mgm[mat] = val
+        mgm_detail[mat] = val
         rows.append({
             "Matière": mat,
             "2nde": moyennes[mat]["2nde"],
@@ -411,12 +593,21 @@ def calculer_candidat(
             "MC": mc,
             "MGM": val,
         })
+
+    mgm_score = construire_mgm_groupes(mgm_detail, serie, params)
+
     scores = {}
     for filiere in filieres:
         try:
-            scores[filiere] = moyenne_dossier_inphb(mgm, params, filiere, serie)
+            scores[filiere] = moyenne_dossier_inphb(
+                mgm_score,
+                params,
+                filiere,
+                serie,
+            )
         except ValueError:
             pass
+
     return pd.DataFrame(rows), scores
 
 
@@ -553,9 +744,16 @@ def generer_population_unique_par_lots(
                 "version_modele": version_modele,
             })
 
+            mgm_score = construire_mgm_groupes(mgm, serie, params)
+
             for filiere in filieres_autorisees_serie(params, serie, filieres):
                 try:
-                    score = moyenne_dossier_inphb(mgm, params, filiere, serie)
+                    score = moyenne_dossier_inphb(
+                        mgm_score,
+                        params,
+                        filiere,
+                        serie,
+                    )
                 except ValueError:
                     continue
                 score_rows.append({"candidate_id": cid, "filiere": filiere, "score": score})

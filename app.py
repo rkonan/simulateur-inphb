@@ -12,11 +12,14 @@ from streamlit_js_eval import streamlit_js_eval
 from simulateur_core import (
     calculer_candidat,
     charger_parametres,
+    construire_mgm_groupes,
+    detail_groupes_score,
     evaluer_admissibilite_depuis_db,
     filieres_autorisees_serie,
     lignes_formule,
     denominateur_formule,
     libelle_formule,
+    matieres_reelles_pour_formules,
     slug,
 )
 from localisation import recuperer_localisation_navigateur
@@ -185,31 +188,40 @@ def score_contributions(
     filiere: str,
     serie: str,
     calculs: pd.DataFrame,
-) -> tuple[pd.DataFrame, float]:
+) -> tuple[pd.DataFrame, float, pd.DataFrame]:
     formule = lignes_formule(params, filiere, serie).copy()
-    mgm_par_matiere = dict(zip(calculs["Matière"], calculs["MGM"]))
+    mgm_detail = dict(zip(calculs["Matière"], calculs["MGM"]))
+    mgm_score = construire_mgm_groupes(mgm_detail, serie, params)
     denominateur = denominateur_formule(params, filiere, serie)
 
     lignes = []
+    groupes_utilises = set()
     for _, ligne in formule.iterrows():
         matiere = str(ligne["matiere"])
+        groupes_utilises.add(matiere)
         coefficient = float(ligne["coefficient_dossier"])
-        mgm = float(mgm_par_matiere[matiere])
+        mgm = float(mgm_score[matiere])
         contribution_brute = mgm * coefficient
         contribution_score = contribution_brute / denominateur
         lignes.append(
             {
-                "Matière": matiere,
-                "MGM": round(mgm, 4),
-                "Coefficient": coefficient,
+                "Matière / groupe": matiere,
+                "MGM utilisée": round(mgm, 4),
+                "Coefficient dossier": coefficient,
                 "Contribution pondérée": round(contribution_brute, 4),
                 "Contribution au score": round(contribution_score, 4),
             }
         )
 
     detail = pd.DataFrame(lignes)
+    detail_groupes = detail_groupes_score(mgm_detail, serie, params)
+    if not detail_groupes.empty:
+        detail_groupes = detail_groupes[
+            detail_groupes["Groupe score"].isin(groupes_utilises)
+        ].copy()
+
     score = float(detail["Contribution au score"].sum())
-    return detail, round(score, 4)
+    return detail, round(score, 4), detail_groupes
 
 
 def recommandation_intrinseque(scores_tries: pd.DataFrame) -> str:
@@ -452,12 +464,10 @@ compatibles = filieres_autorisees_serie(params, serie)
 # Séparation automatique
 filieres_calculables = []
 filieres_sans_formule = []
-matieres = set()
 for filiere in compatibles:
     try:
-        formule_filiere=lignes_formule(params, filiere, serie)
+        lignes_formule(params, filiere, serie)
         filieres_calculables.append(filiere)
-        matieres.update(formule_filiere["matiere"].tolist())
     except ValueError:
         filieres_sans_formule.append(filiere)
 
@@ -481,7 +491,18 @@ if not filieres:
     st.warning("Sélectionne au moins une filière.")
     st.stop()
 
-matieres = sorted(matieres)
+matieres = matieres_reelles_pour_formules(
+    params=params,
+    serie=serie,
+    filieres=filieres_calculables,
+)
+
+if not matieres:
+    st.error(
+        "Aucune matière réelle du bac n'a pu être reliée aux formules "
+        "des filières sélectionnées."
+    )
+    st.stop()
 
 st.subheader("📚 3. Saisie des notes")
 
@@ -596,18 +617,46 @@ with st.expander("Voir le détail du calcul des scores par filière"):
         scores_tries["Filière"].tolist(),
         key="filiere_detail_score",
     )
-    detail, score_recalcule = score_contributions(params, filiere_detail, serie, calculs)
+    detail, score_recalcule, detail_groupes = score_contributions(
+        params,
+        filiere_detail,
+        serie,
+        calculs,
+    )
     st.dataframe(
         detail,
         width="stretch",
         hide_index=True,
         column_config={
-            "MGM": st.column_config.NumberColumn(format="%.2f"),
-            "Coefficient": st.column_config.NumberColumn(format="%.0f"),
+            "MGM utilisée": st.column_config.NumberColumn(format="%.2f"),
+            "Coefficient dossier": st.column_config.NumberColumn(format="%.0f"),
             "Contribution pondérée": st.column_config.NumberColumn(format="%.4f"),
             "Contribution au score": st.column_config.NumberColumn(format="%.4f"),
         },
     )
+
+    groupes_composites = detail_groupes.groupby("Groupe score").size()
+    groupes_composites = groupes_composites[groupes_composites > 1]
+    if not groupes_composites.empty:
+        with st.expander("Voir la construction des matières techniques agrégées"):
+            st.caption(
+                "Les matières génériques comme MT sont calculées à partir des "
+                "matières réelles du bac, selon les poids définis dans l’onglet "
+                "groupes_matieres (généralement les coefficients du bac)."
+            )
+            st.dataframe(
+                detail_groupes[
+                    detail_groupes["Groupe score"].isin(groupes_composites.index)
+                ],
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "MGM matière": st.column_config.NumberColumn(format="%.2f"),
+                    "Coefficient BAC": st.column_config.NumberColumn(format="%.0f"),
+                    "Poids groupe": st.column_config.NumberColumn(format="%.0f"),
+                    "Contribution": st.column_config.NumberColumn(format="%.4f"),
+                },
+            )
     denominateur = denominateur_formule(params, filiere_detail, serie)
     formule_lisible = libelle_formule(params, filiere_detail, serie)
     st.caption(f"Formule générée automatiquement : {formule_lisible}")
@@ -973,7 +1022,7 @@ if (
                 moyennes=st.session_state["analyse_moyennes"],
                 resultats=st.session_state["analyse_resultats"],
                 localisation=st.session_state["localisation"],
-                version_modele="v5_distribution",
+                version_modele="v6_groupes_matieres",
             )
         )
 
@@ -1053,7 +1102,7 @@ if analyse_id_courant:
                             mention=str(st.session_state.get("analyse_mention", mention)),
                             satisfaction=satisfaction,
                             commentaire=commentaire,
-                            version_modele="v5_distribution",
+                            version_modele="v6_groupes_matieres",
                         )
                     )
 
