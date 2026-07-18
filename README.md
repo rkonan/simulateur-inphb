@@ -1,36 +1,39 @@
+# Simulateur INP-HB — version filières cliquables
 
-# Simulateur INP-HB V4
+Cette version conserve la refonte des matières techniques : les notes sont saisies sur les matières réelles du bac et les groupes INP-HB tels que `MT` sont calculés depuis l'onglet `groupes_matieres`.
 
-Cette version sépare clairement deux analyses :
+## Nouveautés de présentation
 
-1. Analyse intrinsèque du dossier
-   - calcul des MC et MGM ;
-   - classement des scores dossier par filière ;
-   - détail des coefficients et contributions par matière ;
-   - première recommandation basée uniquement sur le dossier.
+- les noms des filières sont cliquables dans les classements ;
+- les cartes du Top 3 affichent l'école et l'intitulé de la formation ;
+- un bouton **En savoir plus** ouvre une source officielle INP-HB ;
+- l'onglet Excel `liens_filieres` centralise les écoles, cycles, intitulés et URL ;
+- le tableau comparatif est responsive et mieux adapté aux téléphones.
 
-2. Analyse comparative d'admissibilité
-   - comparaison à une population fictive ;
-   - probabilité exacte et Monte-Carlo ;
-   - rang moyen, médian, P10 et P90 ;
-   - percentile ;
-   - marge au seuil des 1 500 admissibles.
-
-## Générer la population
-
-```bash
-python build_population_et_distributions_db.py \
-  --params parametres_simulateur_inphb.xlsx \
-  --db population_inphb.db \
-  --n 200000 \
-  --batch-size 5000 \
-  --sigma-bac 2.4 \
-  --part-profils-forts 0.60
-```
+Les liens de PME, CGP et TSAERO pointent provisoirement vers le portail général de l'INP-HB, faute de fiche publique spécifique et stable identifiée. Ils peuvent être remplacés directement dans l'onglet `liens_filieres`, sans modification du code.
 
 ## Lancer l'application
 
 ```bash
-export ADMIN_PASSWORD="ton-mot-de-passe"
-streamlit run app_streamlit.py
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run app.py
 ```
+
+## Reconstruire la population et les distributions
+
+```bash
+python build_population_et_distributions_db.py \
+  --params parametres_simulateur_inphb.xlsx \
+  --population-db population_inphb.db \
+  --distributions-db population_inphb_distributions.db \
+  --n 200000 \
+  --batch-size 5000
+```
+
+Consulte aussi `README_REFONTE_MT.md` pour la logique de construction des groupes de matières.
+
+## Secrets
+
+Le fichier `.streamlit/secrets.toml` n'est pas inclus dans l'archive. Utilise `.streamlit/secrets.toml.example` comme modèle afin d'éviter de publier des identifiants sur GitHub.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import html
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,60 @@ st.markdown(
 
     [data-testid="collapsedControl"] {
         display: none;
+    }
+
+    .filiere-table-wrap {
+        overflow-x: auto;
+        margin: 0.4rem 0 1rem 0;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        background: white;
+    }
+    table.filiere-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.94rem;
+    }
+    .filiere-table th {
+        background: #f3f6f8;
+        color: #334155;
+        padding: 0.72rem 0.8rem;
+        text-align: left;
+        white-space: nowrap;
+        border-bottom: 1px solid #dbe2e8;
+    }
+    .filiere-table td {
+        padding: 0.72rem 0.8rem;
+        border-bottom: 1px solid #edf0f2;
+        color: #1f2937;
+        vertical-align: middle;
+    }
+    .filiere-table tr:last-child td {
+        border-bottom: none;
+    }
+    .filiere-link {
+        color: #0b5cad !important;
+        font-weight: 700;
+        text-decoration: none !important;
+    }
+    .filiere-link:hover {
+        text-decoration: underline !important;
+    }
+    .school-badge {
+        display: inline-block;
+        padding: 0.16rem 0.48rem;
+        border-radius: 999px;
+        background: #eef4f8;
+        color: #35546b;
+        font-size: 0.78rem;
+        font-weight: 650;
+        margin-bottom: 0.3rem;
+    }
+    @media (max-width: 767px) {
+        .filiere-table th, .filiere-table td {
+            padding: 0.62rem 0.64rem;
+            font-size: 0.87rem;
+        }
     }
     </style>
     """,
@@ -98,6 +153,73 @@ def creer_stockage_analyses() -> StockageAnalyses:
 
 
 STOCKAGE_ANALYSES = creer_stockage_analyses()
+
+
+def infos_filiere(params: Any, filiere: str) -> dict[str, str]:
+    df = getattr(params, "liens_filieres", pd.DataFrame())
+    if df.empty or "filiere" not in df.columns:
+        return {}
+
+    cible = str(filiere).strip().upper()
+    lignes = df[
+        df["filiere"].astype(str).str.strip().str.upper() == cible
+    ]
+    if lignes.empty:
+        return {}
+
+    ligne = lignes.iloc[0]
+    resultat: dict[str, str] = {}
+    for colonne in (
+        "filiere", "ecole", "cycle", "intitule",
+        "url_officielle", "type_lien", "commentaire",
+    ):
+        valeur = ligne.get(colonne)
+        if pd.notna(valeur) and str(valeur).strip():
+            resultat[colonne] = str(valeur).strip()
+    return resultat
+
+
+def lien_filiere_html(params: Any, filiere: str) -> str:
+    infos = infos_filiere(params, filiere)
+    nom = html.escape(str(filiere))
+    url = infos.get("url_officielle")
+    if not url:
+        return f"<strong>{nom}</strong>"
+    return (
+        f'<a class="filiere-link" href="{html.escape(url, quote=True)}" '
+        f'target="_blank" rel="noopener noreferrer">{nom} ↗</a>'
+    )
+
+
+def afficher_tableau_filieres(
+    df: pd.DataFrame,
+    params: Any,
+    colonnes: list[str] | None = None,
+) -> None:
+    if df.empty:
+        return
+
+    colonnes = colonnes or list(df.columns)
+    entetes = "".join(f"<th>{html.escape(str(c))}</th>" for c in colonnes)
+    lignes_html = []
+
+    for _, ligne in df.iterrows():
+        cellules = []
+        for colonne in colonnes:
+            valeur = ligne.get(colonne, "")
+            if colonne == "Filière":
+                contenu = lien_filiere_html(params, str(valeur))
+            else:
+                contenu = html.escape(str(valeur))
+            cellules.append(f"<td>{contenu}</td>")
+        lignes_html.append("<tr>" + "".join(cellules) + "</tr>")
+
+    table = (
+        '<div class="filiere-table-wrap"><table class="filiere-table">'
+        f"<thead><tr>{entetes}</tr></thead>"
+        f"<tbody>{''.join(lignes_html)}</tbody></table></div>"
+    )
+    st.markdown(table, unsafe_allow_html=True)
 
 
 def formater_probabilite(valeur: float | None) -> str:
@@ -601,15 +723,11 @@ st.success(
     "💡  Ce premier classement compare uniquement tes propres scores entre filières. "
     "Il ne mesure pas encore ta position face aux autres candidats."
 )
-st.dataframe(
-    scores_tries,
-    width="stretch",
-    hide_index=True,
-    column_config={
-        "Rang du score": st.column_config.NumberColumn(format="%d"),
-        "Score dossier": st.column_config.NumberColumn(format="%.2f"),
-    },
+scores_affichage = scores_tries.copy()
+scores_affichage["Score dossier"] = scores_affichage["Score dossier"].map(
+    lambda x: f"{float(x):.2f} / 20"
 )
+afficher_tableau_filieres(scores_affichage, params)
 
 with st.expander("Voir le détail du calcul des scores par filière"):
     filiere_detail = st.selectbox(
@@ -674,8 +792,22 @@ if not scores_tries.empty:
         with colonne:
             with st.container(border=True):
                 st.caption(f"#{rang} selon ton score")
-                st.markdown(f"### {ligne['Filière']}")
+                infos = infos_filiere(params, ligne["Filière"])
+                if infos.get("ecole"):
+                    st.markdown(
+                        f'<span class="school-badge">🏫 {html.escape(infos["ecole"])}</span>',
+                        unsafe_allow_html=True,
+                    )
+                st.markdown(f"### {lien_filiere_html(params, ligne['Filière'])}", unsafe_allow_html=True)
+                if infos.get("intitule"):
+                    st.caption(infos["intitule"])
                 st.metric("Score dossier", f"{ligne['Score dossier']:.2f} / 20")
+                if infos.get("url_officielle"):
+                    st.link_button(
+                        "📖 En savoir plus",
+                        infos["url_officielle"],
+                        use_container_width=True,
+                    )
 
 #st.subheader("6. Données anonymisées")
 #consentement = st.checkbox(
@@ -812,7 +944,18 @@ if resultats_session:
             with colonne:
                 with st.container(border=True):
                     st.caption(f"#{rang}")
-                    st.markdown(f"### {ligne['filiere']}")
+                    infos = infos_filiere(params, ligne["filiere"])
+                    if infos.get("ecole"):
+                        st.markdown(
+                            f'<span class="school-badge">🏫 {html.escape(infos["ecole"])}</span>',
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(
+                        f"### {lien_filiere_html(params, ligne['filiere'])}",
+                        unsafe_allow_html=True,
+                    )
+                    if infos.get("intitule"):
+                        st.caption(infos["intitule"])
                     st.write(etoiles)
                     st.markdown(f"**{niveau}**")
                     st.markdown(f"**{commentaire}**")
@@ -825,6 +968,12 @@ if resultats_session:
                     st.caption(
                         f"Marge : {formater_marge(ligne.get('marge'))} · {niveau_marge(ligne.get('marge'))}"
                     )
+                    if infos.get("url_officielle"):
+                        st.link_button(
+                            "📖 En savoir plus",
+                            infos["url_officielle"],
+                            use_container_width=True,
+                        )
                     # if pd.notna(ligne.get("rang_p90")):
                     #     st.caption(f"Rang prudent P90 : {ligne['rang_p90']:.0f}")
                     # if pd.notna(ligne.get("percentile")):
@@ -926,28 +1075,26 @@ if resultats_session:
         tableau_synthese["Position"] = tableau_synthese[
         "Marge"].apply(statut_marge)
     
+        tableau_synthese["École"] = tableau_synthese["filiere"].map(
+            lambda nom: infos_filiere(params, nom).get("ecole", "INP-HB")
+        )
         tableau_synthese = tableau_synthese[
             [
                 "Classement",
                 "filiere",
+                "École",
                 "Score dossier",
                 "Rang moyen",
                 "Marge au seuil",
-                 "Position",
+                "Position",
             ]
         ].rename(
             columns={
                 "filiere": "Filière",
             }
         )
-    
-    
-    
-        st.dataframe(
-            tableau_synthese,
-            width="stretch",
-            hide_index=True,
-        )
+
+        afficher_tableau_filieres(tableau_synthese, params)
     if not frame_calcule.empty:
         display = frame_calcule.copy()
         display["Probabilité estimée"] = display["probabilite_exacte"].map(formater_probabilite)

@@ -60,6 +60,7 @@ class SimParams:
     mentions: pd.DataFrame
     stats_series: pd.DataFrame
     eligibilite: pd.DataFrame
+    liens_filieres: pd.DataFrame
 
 
 def charger_parametres(fichier_excel: str | Path) -> SimParams:
@@ -138,6 +139,7 @@ def charger_parametres(fichier_excel: str | Path) -> SimParams:
         mentions=pd.read_excel(path, sheet_name="mentions_inphb"),
         stats_series=pd.read_excel(path, sheet_name="stats_series_2025"),
         eligibilite=pd.read_excel(path, sheet_name="eligibilite_inphb"),
+        liens_filieres=pd.read_excel(path, sheet_name="liens_filieres"),
     )
 
 def formules_dossier(params: SimParams) -> pd.DataFrame:
