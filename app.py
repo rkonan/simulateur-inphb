@@ -512,6 +512,8 @@ def saisir_notes_mobile(
 nb_dossiers=3000
 st.title("🎓 Analyse de dossier bachelier INP-HB")
 
+st.page_link("pages/01_Projection.py", label="📈 Simuler ma progression et mon admissibilité", icon="🎯")
+
 st.markdown(
     """
 <h4 style="
