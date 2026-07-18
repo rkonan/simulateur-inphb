@@ -15,7 +15,8 @@ from simulateur_core import (
     evaluer_admissibilite_depuis_db,
     filieres_autorisees_serie,
     lignes_formule,
-    lister_filieres_db,
+    denominateur_formule,
+    libelle_formule,
     slug,
 )
 from localisation import recuperer_localisation_navigateur
@@ -187,7 +188,7 @@ def score_contributions(
 ) -> tuple[pd.DataFrame, float]:
     formule = lignes_formule(params, filiere, serie).copy()
     mgm_par_matiere = dict(zip(calculs["Matière"], calculs["MGM"]))
-    denominateur = float(formule["denominateur"].iloc[0])
+    denominateur = denominateur_formule(params, filiere, serie)
 
     lignes = []
     for _, ligne in formule.iterrows():
@@ -431,12 +432,11 @@ localisation = recuperer_localisation_navigateur()
 
 collecte=True
 
-if not LOCAL_PARAMS.exists() or not LOCAL_DB.exists():
-    st.error("Ajoute parametres_simulateur_inphb.xlsx et population_inphb_distributions.db dans le dossier.")
+if not LOCAL_PARAMS.exists():
+    st.error("Ajoute parametres_simulateur_inphb.xlsx dans le dossier.")
     st.stop()
 
 params = charger_parametres(LOCAL_PARAMS)
-filieres_db = lister_filieres_db(LOCAL_DB)
 
 st.subheader("1. Ton profil")
 col1, col2 = st.columns(2)
@@ -446,23 +446,41 @@ mention = col2.selectbox(
     params.mentions["mention"].astype(str).tolist(),
     index=1,
 )
+# Toutes les filières autorisées par l'éligibilité
+compatibles = filieres_autorisees_serie(params, serie)
 
-compatibles = filieres_autorisees_serie(params, serie, filieres_db)
+# Séparation automatique
+filieres_calculables = []
+filieres_sans_formule = []
+matieres = set()
+for filiere in compatibles:
+    try:
+        formule_filiere=lignes_formule(params, filiere, serie)
+        filieres_calculables.append(filiere)
+        matieres.update(formule_filiere["matiere"].tolist())
+    except ValueError:
+        filieres_sans_formule.append(filiere)
+
 st.subheader("2. Tes filières compatibles")
+
 filieres = st.multiselect(
-    "Toutes les filières compatibles sont sélectionnées par défaut",
-    compatibles,
-    default=compatibles,
+    "Toutes les filières pouvant être analysées sont sélectionnées par défaut",
+    filieres_calculables,
+    default=filieres_calculables,
 )
+
+if filieres_sans_formule:
+    st.info(
+        "Les filières suivantes sont accessibles avec votre série de baccalauréat, "
+        "mais leur analyse n'est pas encore disponible : **"
+        + ", ".join(filieres_sans_formule)
+        + "**."
+    )
+
 if not filieres:
     st.warning("Sélectionne au moins une filière.")
     st.stop()
 
-matieres = set()
-for filiere in filieres:
-    matieres.update(
-        lignes_formule(params, filiere, serie)["matiere"].tolist()
-    )
 matieres = sorted(matieres)
 
 st.subheader("📚 3. Saisie des notes")
@@ -478,7 +496,9 @@ else:
         serie=serie,
     )
 
-calculs, scores = calculer_candidat(params, serie, mention, notes_bac, moyennes, filieres)
+calculs, scores = calculer_candidat(
+    params, serie, mention, notes_bac, moyennes, filieres_calculables
+)
 
 signature_courante = (
     serie,
@@ -588,7 +608,9 @@ with st.expander("Voir le détail du calcul des scores par filière"):
             "Contribution au score": st.column_config.NumberColumn(format="%.4f"),
         },
     )
-    denominateur = float(lignes_formule(params, filiere_detail, serie)["denominateur"].iloc[0])
+    denominateur = denominateur_formule(params, filiere_detail, serie)
+    formule_lisible = libelle_formule(params, filiere_detail, serie)
+    st.caption(f"Formule générée automatiquement : {formule_lisible}")
     st.latex(
         rf"Score_{{{filiere_detail}}}=\frac{{\sum(MGM_{{matière}}\times coefficient)}}{{{denominateur:g}}}"
     )
@@ -642,6 +664,7 @@ if st.button("Analyser mes chances d'admissibilité", type="primary", width="str
         resultat = evaluer_admissibilite_depuis_db(
             path=LOCAL_DB,
             filiere=filiere,
+            serie=serie,
             score_candidat=score,
             nb_dossiers_concurrents=int(nb_dossiers),
             seuil_admissibles=SEUIL_ADMISSIBLES,
@@ -690,10 +713,23 @@ if resultats_session:
     )
     frame_calcule = frame[frame["probabilite"].notna()].copy()
 
+    frame_indisponible = frame[frame["probabilite"].isna()].copy()
+
+    if not frame_indisponible.empty:
+        noms_indisponibles = ", ".join(
+            frame_indisponible["filiere"].astype(str).tolist()
+        )
+        st.info(
+            "L'analyse du score dossier reste disponible, mais l'analyse "
+            f"comparative n'est pas encore disponible pour la série **{serie}** "
+            f"sur : **{noms_indisponibles}**."
+        )
+
     if frame_calcule.empty:
         st.warning(
-            "Aucune probabilité n'a pu être calculée. Vérifie la base de population "
-            "et les paramètres du modèle."
+            f"Aucune donnée statistique n'est disponible pour les couples "
+            f"filière/série sélectionnés avec la série {serie}. "
+            "Les scores intrinsèques affichés plus haut restent utilisables."
         )
     else:
 
@@ -776,151 +812,151 @@ if resultats_session:
         st.info(lecture)
 
 
-    st.subheader("📋 Classement complet des filières")
-    tableau_synthese = frame_calcule.copy()
-
-    # tableau_synthese["Marge"] = (
-    #     tableau_synthese["seuil_admissible"]
-    #     - tableau_synthese["rang_moyen"]
-    # )
-    tableau_synthese["Marge"]=tableau_synthese["marge"]
-    tableau_synthese["Marge au seuil"] = tableau_synthese["marge"].apply(
-        lambda x: (
-            f"+{x:.0f} places"
-            if pd.notna(x) and x >= 0
-            else f"{x:.0f} places"
-            if pd.notna(x)
-            else "Non calculée"
+    if not frame_calcule.empty:
+        st.subheader("📋 Classement comparatif des filières disponibles")
+        tableau_synthese = frame_calcule.copy()
+    
+        # tableau_synthese["Marge"] = (
+        #     tableau_synthese["seuil_admissible"]
+        #     - tableau_synthese["rang_moyen"]
+        # )
+        tableau_synthese["Marge"]=tableau_synthese["marge"]
+        tableau_synthese["Marge au seuil"] = tableau_synthese["marge"].apply(
+            lambda x: (
+                f"+{x:.0f} places"
+                if pd.notna(x) and x >= 0
+                else f"{x:.0f} places"
+                if pd.notna(x)
+                else "Non calculée"
+            )
         )
-    )
-
-    tableau_synthese["Rang moyen"] = tableau_synthese["rang_moyen"].apply(
-        lambda x: (
-            f"{x:.0f} / {nb_dossiers:,}".replace(",", " ")
-            if pd.notna(x)
-            else "Non calculé"
+    
+        tableau_synthese["Rang moyen"] = tableau_synthese["rang_moyen"].apply(
+            lambda x: (
+                f"{x:.0f} / {nb_dossiers:,}".replace(",", " ")
+                if pd.notna(x)
+                else "Non calculé"
+            )
         )
-    )
-
-    tableau_synthese["Score dossier"] = tableau_synthese[
-        "score"
-    ].apply(
-        lambda x: f"{x:.2f} / 20" if pd.notna(x) else "Non calculé"
-    )
-
-    tableau_synthese = tableau_synthese.sort_values(
-        by=["Marge", "score"],
-        ascending=[False, False],
-    )
-
-    tableau_synthese.insert(
-        0,
-        "Classement",
-        range(1, len(tableau_synthese) + 1),
-    )
-
-    def statut_marge(marge: float | None) -> str:
-        if marge is None or pd.isna(marge):
-            return "Non calculé"
-
-        if marge >= 150:
-            return "🟢 Très favorable"
-
-        if marge >= 50:
-            return "🟢 Favorable"
-
-        if marge >= -50:
-            return "🟡 Zone limite"
-
-        if marge >= -150:
-            return "🟠 À renforcer"
-
-        return "🔴 Sélectif"
-
-    tableau_synthese["Position"] = tableau_synthese[
-    "Marge"].apply(statut_marge)
-
-    tableau_synthese = tableau_synthese[
-        [
+    
+        tableau_synthese["Score dossier"] = tableau_synthese[
+            "score"
+        ].apply(
+            lambda x: f"{x:.2f} / 20" if pd.notna(x) else "Non calculé"
+        )
+    
+        tableau_synthese = tableau_synthese.sort_values(
+            by=["Marge", "score"],
+            ascending=[False, False],
+        )
+    
+        tableau_synthese.insert(
+            0,
             "Classement",
-            "filiere",
-            "Score dossier",
-            "Rang moyen",
-            "Marge au seuil",
-             "Position",
-        ]
-    ].rename(
-        columns={
-            "filiere": "Filière",
-        }
-    )
-
-
-
-    st.dataframe(
-        tableau_synthese,
-        width="stretch",
-        hide_index=True,
-    )
-
-    display = frame.copy()
-    display["Probabilité estimée"] = display["probabilite_exacte"].map(formater_probabilite)
-    display["Marge au seuil"] = display["marge"].map(formater_marge)
-    display["Lecture de la marge"] = display["marge"].map(niveau_marge)
-
-    display = display.rename(
-        columns={
-            "filiere": "Filière",
-            "score": "Score dossier",
-            "dossiers_concurrents": "Dossiers concurrents",
-            "seuil_admissibles": "Seuil admissible",
-            "rang_moyen": "Rang moyen",
-            "rang_median": "Rang médian",
-            "rang_p10": "Rang P10",
-            "rang_p90": "Rang P90",
-            "percentile": "Percentile base",
-            "population": "Population de référence",
-        }
-    )
-
-    with st.expander("📊 Tableau détaillé des probabilités"):
+            range(1, len(tableau_synthese) + 1),
+        )
+    
+        def statut_marge(marge: float | None) -> str:
+            if marge is None or pd.isna(marge):
+                return "Non calculé"
+    
+            if marge >= 150:
+                return "🟢 Très favorable"
+    
+            if marge >= 50:
+                return "🟢 Favorable"
+    
+            if marge >= -50:
+                return "🟡 Zone limite"
+    
+            if marge >= -150:
+                return "🟠 À renforcer"
+    
+            return "🔴 Sélectif"
+    
+        tableau_synthese["Position"] = tableau_synthese[
+        "Marge"].apply(statut_marge)
+    
+        tableau_synthese = tableau_synthese[
+            [
+                "Classement",
+                "filiere",
+                "Score dossier",
+                "Rang moyen",
+                "Marge au seuil",
+                 "Position",
+            ]
+        ].rename(
+            columns={
+                "filiere": "Filière",
+            }
+        )
+    
+    
+    
         st.dataframe(
-            display[
-                [
-                    "Filière",
-                    "Score dossier",
-                    "Dossiers concurrents",
-                    "Seuil admissible",
-                    "Marge au seuil",
-                    "Lecture de la marge",
-                    "Probabilité estimée",
-                    "Rang moyen",
-                    "Rang médian",
-                    "Rang P10",
-                    "Rang P90",
-                    "Percentile base",
-                    "Population de référence",
-                ]
-            ],
+            tableau_synthese,
             width="stretch",
             hide_index=True,
         )
-
-        with st.expander("Comment lire l'analyse comparative ?"):
-            st.markdown(
-                f"""
-    - La base synthétique contient la distribution des scores par filière, arrondis à deux décimales.
-    - La proportion de profils ayant un score supérieur au tien est calculée directement dans SQLite.
-    - Cette proportion sert à projeter ton rang parmi **{int(nb_dossiers):,} dossiers concurrents**.
-    - Ton dossier est déclaré admissible lorsque son rang est dans le **Top {SEUIL_ADMISSIBLES}**.
-    - La **marge au seuil** vaut : `{SEUIL_ADMISSIBLES} - rang moyen`.
-    - Une marge positive place le rang moyen dans la zone admissible.
-    - Une marge négative indique le nombre moyen de places manquantes.
-    - La probabilité et les quantiles de rang viennent d'un calcul binomial exact.
-    - Aucun tirage Monte-Carlo n'est effectué.
-    """.replace(",", " ")
+    if not frame_calcule.empty:
+        display = frame_calcule.copy()
+        display["Probabilité estimée"] = display["probabilite_exacte"].map(formater_probabilite)
+        display["Marge au seuil"] = display["marge"].map(formater_marge)
+        display["Lecture de la marge"] = display["marge"].map(niveau_marge)
+    
+        display = display.rename(
+            columns={
+                "filiere": "Filière",
+                "score": "Score dossier",
+                "dossiers_concurrents": "Dossiers concurrents",
+                "seuil_admissibles": "Seuil admissible",
+                "rang_moyen": "Rang moyen",
+                "rang_median": "Rang médian",
+                "rang_p10": "Rang P10",
+                "rang_p90": "Rang P90",
+                "percentile": "Percentile base",
+                "population": "Population de référence",
+            }
+        )
+    
+        with st.expander("📊 Tableau détaillé des probabilités"):
+            st.dataframe(
+                display[
+                    [
+                        "Filière",
+                        "Score dossier",
+                        "Dossiers concurrents",
+                        "Seuil admissible",
+                        "Marge au seuil",
+                        "Lecture de la marge",
+                        "Probabilité estimée",
+                        "Rang moyen",
+                        "Rang médian",
+                        "Rang P10",
+                        "Rang P90",
+                        "Percentile base",
+                        "Population de référence",
+                    ]
+                ],
+                width="stretch",
+                hide_index=True,
             )
-
+    
+            with st.expander("Comment lire l'analyse comparative ?"):
+                st.markdown(
+                    f"""
+        - La base synthétique contient la distribution des scores par filière, arrondis à deux décimales.
+        - La proportion de profils ayant un score supérieur au tien est calculée directement dans SQLite.
+        - Cette proportion sert à projeter ton rang parmi **{int(nb_dossiers):,} dossiers concurrents**.
+        - Ton dossier est déclaré admissible lorsque son rang est dans le **Top {SEUIL_ADMISSIBLES}**.
+        - La **marge au seuil** vaut : `{SEUIL_ADMISSIBLES} - rang moyen`.
+        - Une marge positive place le rang moyen dans la zone admissible.
+        - Une marge négative indique le nombre moyen de places manquantes.
+        - La probabilité et les quantiles de rang viennent d'un calcul binomial exact.
+        - Aucun tirage Monte-Carlo n'est effectué.
+        """.replace(",", " ")
+                )
 # -----------------------------------------------------------------------------
 # Sauvegarde distante après affichage des résultats
 # -----------------------------------------------------------------------------

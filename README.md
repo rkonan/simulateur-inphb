@@ -19,7 +19,7 @@ Cette version sépare clairement deux analyses :
 ## Générer la population
 
 ```bash
-python build_population_db.py \
+python build_population_et_distributions_db.py \
   --params parametres_simulateur_inphb.xlsx \
   --db population_inphb.db \
   --n 200000 \

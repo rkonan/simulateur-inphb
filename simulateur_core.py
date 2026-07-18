@@ -58,6 +58,7 @@ class SimParams:
     places: pd.DataFrame
     mentions: pd.DataFrame
     stats_series: pd.DataFrame
+    eligibilite: pd.DataFrame
 
 
 def charger_parametres(fichier_excel: str | Path) -> SimParams:
@@ -76,6 +77,7 @@ def charger_parametres(fichier_excel: str | Path) -> SimParams:
         places=pd.read_excel(path, sheet_name="places_estimees"),
         mentions=pd.read_excel(path, sheet_name="mentions_inphb"),
         stats_series=pd.read_excel(path, sheet_name="stats_series_2025"),
+        eligibilite=pd.read_excel(path, sheet_name="eligibilite_inphb"),
     )
 
 
@@ -88,34 +90,175 @@ def _series_cell(cell: object) -> List[str]:
     return [x.strip() for x in str(cell).split(",") if x.strip()]
 
 
-def filieres_autorisees_serie(params: SimParams, serie: str, disponibles: Iterable[str] | None = None) -> List[str]:
-    df = formules_dossier(params)
-    if disponibles is not None:
-        d = {str(x).upper() for x in disponibles}
-        df = df[df["concours_filiere"].astype(str).str.upper().isin(d)]
-    result = []
-    for filiere, group in df.groupby("concours_filiere"):
-        if any(serie in _series_cell(c) for c in group["series_autorisees"].dropna()):
-            result.append(str(filiere))
-    return sorted(set(result))
+def _eligibilite_normalisee(params: SimParams) -> pd.DataFrame:
+    """Retourne les lignes d'éligibilité exploitables du fichier Excel.
+
+    L'onglet ``eligibilite_inphb`` est l'unique source de vérité pour savoir
+    quelles séries peuvent sélectionner quelles filières. Les coefficients ne
+    servent qu'au calcul du score et la base SQLite uniquement à la comparaison
+    statistique.
+    """
+    df = params.eligibilite.copy()
+    colonnes_requises = {"groupe_filiere", "series_ou_BT_admissibles"}
+    manquantes = colonnes_requises.difference(df.columns)
+    if manquantes:
+        raise ValueError(
+            "Colonnes manquantes dans eligibilite_inphb : "
+            + ", ".join(sorted(manquantes))
+        )
+
+    df = df.dropna(subset=["groupe_filiere", "series_ou_BT_admissibles"]).copy()
+    df["groupe_filiere"] = df["groupe_filiere"].astype(str).str.strip()
+    return df[df["groupe_filiere"] != ""]
+
+
+def filieres_autorisees_serie(
+    params: SimParams,
+    serie: str,
+    disponibles: Iterable[str] | None = None,
+) -> List[str]:
+    """Liste les filières autorisées par l'onglet ``eligibilite_inphb``.
+
+    ``disponibles`` est conservé uniquement pour compatibilité avec d'anciens
+    appels. Il ne doit plus être utilisé pour filtrer l'offre à partir de la
+    base statistique.
+    """
+    del disponibles
+    serie_normalisee = str(serie).strip().upper()
+    df = _eligibilite_normalisee(params)
+
+    resultat = {
+        str(row["groupe_filiere"]).strip()
+        for _, row in df.iterrows()
+        if serie_normalisee
+        in {x.upper() for x in _series_cell(row["series_ou_BT_admissibles"])}
+    }
+    return sorted(resultat)
 
 
 def series_autorisees_filiere(params: SimParams, filiere: str) -> List[str]:
-    df = formules_dossier(params)
-    df = df[df["concours_filiere"].astype(str).str.upper() == filiere.upper()]
+    df = _eligibilite_normalisee(params)
+    df = df[
+        df["groupe_filiere"].astype(str).str.upper()
+        == str(filiere).strip().upper()
+    ]
     out = set()
-    for cell in df["series_autorisees"].dropna():
+    for cell in df["series_ou_BT_admissibles"].dropna():
         out.update(_series_cell(cell))
     return sorted(x for x in out if x in params.coeffs_bac)
 
 
-def lignes_formule(params: SimParams, filiere: str, serie: str) -> pd.DataFrame:
-    df = formules_dossier(params)
-    df = df[df["concours_filiere"].astype(str).str.upper() == filiere.upper()]
-    df = df[df["series_autorisees"].map(lambda c: serie in _series_cell(c))]
+def _serie_correspond_formule(serie: str, cell: object) -> bool:
+    """Teste une série précise contre les groupes utilisés dans les formules.
+
+    Dans ``coefficients_inphb``, les libellés génériques ``F`` et ``BT``
+    désignent respectivement toutes les séries F et tous les brevets de
+    technicien. L'autorisation exacte reste portée par ``eligibilite_inphb``.
+    """
+    serie_norm = str(serie).strip().upper()
+    for token in (x.upper() for x in _series_cell(cell)):
+        if token == serie_norm:
+            return True
+        if token == "F" and serie_norm.startswith("F"):
+            return True
+        if token == "BT" and serie_norm.startswith("BT"):
+            return True
+    return False
+
+
+def profil_coefficients_filiere(
+    params: SimParams,
+    filiere: str,
+    serie: str | None = None,
+) -> str | None:
+    """Retourne le profil de coefficients déclaré dans l'onglet d'éligibilité."""
+    df = _eligibilite_normalisee(params)
+    df = df[
+        df["groupe_filiere"].astype(str).str.upper()
+        == str(filiere).strip().upper()
+    ]
+    if serie is not None:
+        serie_norm = str(serie).strip().upper()
+        df = df[
+            df["series_ou_BT_admissibles"].map(
+                lambda c: serie_norm in {x.upper() for x in _series_cell(c)}
+            )
+        ]
     if df.empty:
-        raise ValueError(f"La série {serie} n'est pas autorisée pour {filiere} ou la formule manque.")
+        return None
+
+    if "profil_coefficients" not in df.columns:
+        # Compatibilité avec les anciens fichiers : une filière portant le
+        # même code que sa formule peut encore être calculée.
+        return str(filiere).strip()
+
+    valeurs = df["profil_coefficients"].dropna().astype(str).str.strip()
+    valeurs = valeurs[valeurs != ""]
+    return valeurs.iloc[0] if not valeurs.empty else None
+
+
+def lignes_formule(params: SimParams, filiere: str, serie: str) -> pd.DataFrame:
+    """Retourne les matières et coefficients applicables à une filière/série.
+
+    Le dénominateur et le libellé de la formule ne sont jamais lus dans Excel :
+    ils sont déduits automatiquement des coefficients sélectionnés.
+    """
+    profil = profil_coefficients_filiere(params, filiere, serie)
+    if not profil:
+        raise ValueError(
+            f"Aucun profil de coefficients n'est défini pour {filiere} "
+            f"avec la série {serie}."
+        )
+
+    df = formules_dossier(params)
+    df = df[
+        df["concours_filiere"].astype(str).str.upper()
+        == str(profil).strip().upper()
+    ]
+    df = df[
+        df["series_autorisees"].map(
+            lambda c: _serie_correspond_formule(serie, c)
+        )
+    ]
+    if df.empty:
+        raise ValueError(
+            f"Les coefficients du profil {profil} manquent pour la série {serie} "
+            f"(filière {filiere})."
+        )
+
+    df = df.copy()
+    df["coefficient_dossier"] = pd.to_numeric(
+        df["coefficient_dossier"], errors="coerce"
+    )
+    df = df.dropna(subset=["matiere", "coefficient_dossier"])
+    df = df[df["coefficient_dossier"] > 0]
+    if df.empty:
+        raise ValueError(
+            f"Aucun coefficient positif n'est défini pour le profil {profil}, "
+            f"série {serie}."
+        )
     return df
+
+
+def denominateur_formule(params: SimParams, filiere: str, serie: str) -> float:
+    """Somme automatiquement les coefficients de la formule applicable."""
+    df = lignes_formule(params, filiere, serie)
+    denominateur = float(df["coefficient_dossier"].sum())
+    if denominateur <= 0:
+        raise ValueError(
+            f"Le dénominateur calculé est nul pour {filiere}, série {serie}."
+        )
+    return denominateur
+
+
+def libelle_formule(params: SimParams, filiere: str, serie: str) -> str:
+    """Génère une formule lisible depuis les matières et coefficients Excel."""
+    df = lignes_formule(params, filiere, serie)
+    termes = [
+        f"{row.matiere}×{float(row.coefficient_dossier):g}"
+        for row in df.itertuples(index=False)
+    ]
+    return " + ".join(termes) + f" / {denominateur_formule(params, filiere, serie):g}"
 
 
 def moyenne_ponderee(notes: Dict[str, float], coeffs: Dict[str, float]) -> float:
@@ -237,7 +380,7 @@ def calculer_mc_mgm(note_bac: float, moyennes: Dict[str, float]) -> Tuple[float,
 
 def moyenne_dossier_inphb(mgm: Dict[str, float], params: SimParams, filiere: str, serie: str) -> float:
     df = lignes_formule(params, filiere, serie)
-    denominator = float(df["denominateur"].iloc[0])
+    denominator = denominateur_formule(params, filiere, serie)
     total = 0.0
     for _, row in df.iterrows():
         mat = canon(row["matiere"])
@@ -420,122 +563,196 @@ def generer_population_unique_par_lots(
         yield pd.DataFrame(cand_rows), pd.DataFrame(note_rows), pd.DataFrame(score_rows)
 
 
-def lister_filieres_db(path: str | Path) -> List[str]:
-    """Liste les filières disponibles dans la base agrégée."""
-    with sqlite3.connect(path) as con:
-        rows = con.execute(
-            """
-            SELECT DISTINCT filiere
-            FROM distributions_scores
-            ORDER BY filiere
-            """
-        ).fetchall()
+def _colonnes_distributions(path: str | Path) -> set[str]:
+    """Retourne les colonnes de la table agrégée, ou un ensemble vide."""
+    path = Path(path)
+    if not path.exists():
+        return set()
+    try:
+        with sqlite3.connect(path) as con:
+            rows = con.execute("PRAGMA table_info(distributions_scores)").fetchall()
+    except sqlite3.Error:
+        return set()
+    return {str(row[1]) for row in rows}
+
+
+def lister_filieres_db(path: str | Path, serie: str | None = None) -> List[str]:
+    """Liste les filières disponibles dans la base statistique.
+
+    Cette fonction ne pilote plus l'éligibilité de l'interface. Lorsque
+    ``serie`` est fournie, seules les distributions de cette série sont
+    retournées. Une ancienne base dépourvue de la colonne ``serie`` n'est pas
+    considérée comme exploitable pour une analyse par couple filière/série.
+    """
+    colonnes = _colonnes_distributions(path)
+    if not {"filiere", "score_arrondi", "effectif"}.issubset(colonnes):
+        return []
+    if serie is not None and "serie" not in colonnes:
+        return []
+
+    try:
+        with sqlite3.connect(path) as con:
+            if serie is None:
+                rows = con.execute(
+                    "SELECT DISTINCT filiere FROM distributions_scores ORDER BY filiere"
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    """
+                    SELECT DISTINCT filiere
+                    FROM distributions_scores
+                    WHERE UPPER(TRIM(serie)) = UPPER(TRIM(?))
+                    ORDER BY filiere
+                    """,
+                    (str(serie),),
+                ).fetchall()
+    except sqlite3.Error:
+        return []
     return [str(row[0]) for row in rows]
+
+
+def statistique_disponible(
+    path: str | Path,
+    filiere: str,
+    serie: str,
+) -> bool:
+    """Indique si une distribution existe pour le couple filière/série."""
+    colonnes = _colonnes_distributions(path)
+    requises = {"filiere", "serie", "score_arrondi", "effectif"}
+    if not requises.issubset(colonnes):
+        return False
+
+    try:
+        with sqlite3.connect(path) as con:
+            row = con.execute(
+                """
+                SELECT COALESCE(SUM(effectif), 0)
+                FROM distributions_scores
+                WHERE UPPER(TRIM(filiere)) = UPPER(TRIM(?))
+                  AND UPPER(TRIM(serie)) = UPPER(TRIM(?))
+                """,
+                (str(filiere), str(serie)),
+            ).fetchone()
+    except sqlite3.Error:
+        return False
+    return int((row or [0])[0] or 0) > 0
+
+
+def _resultat_indisponible(
+    score_reference: float,
+    nb_dossiers_concurrents: int,
+    seuil_admissibles: int,
+    raison: str,
+) -> Dict[str, float | int | str | bool | None]:
+    return {
+        "disponible": False,
+        "raison_indisponibilite": raison,
+        "probabilite": None,
+        "probabilite_exacte": None,
+        "rang_moyen": None,
+        "rang_median": None,
+        "rang_p10": None,
+        "rang_p90": None,
+        "percentile": None,
+        "population": 0,
+        "seuil_admissibles": int(seuil_admissibles),
+        "dossiers_concurrents": int(nb_dossiers_concurrents),
+        "proportion_devant": None,
+        "score_reference": score_reference,
+    }
 
 
 def evaluer_admissibilite_depuis_db(
     path: str | Path,
     filiere: str,
+    serie: str,
     score_candidat: float,
     nb_dossiers_concurrents: int,
     seuil_admissibles: int = 1500,
-) -> Dict[str, float | int | None]:
-    """Évalue l'admissibilité à partir de la distribution agrégée des scores.
+) -> Dict[str, float | int | str | bool | None]:
+    """Évalue l'admissibilité pour un couple précis filière/série.
 
-    La base contient, pour chaque filière et chaque score arrondi à deux
-    décimales, l'effectif observé. Aucun score individuel n'est chargé en
-    mémoire et aucun tirage Monte-Carlo n'est effectué.
-
-    Si ``p`` désigne la proportion de la population de référence ayant un
-    score strictement supérieur à celui du candidat, le nombre de concurrents
-    placés devant lui suit une loi binomiale de paramètres
-    ``nb_dossiers_concurrents`` et ``p``.
+    La table ``distributions_scores`` doit contenir les colonnes ``filiere``,
+    ``serie``, ``score_arrondi`` et ``effectif``. Une ancienne base agrégée
+    uniquement par filière est volontairement déclarée indisponible afin de ne
+    pas mélanger des séries dont les profils statistiques sont différents.
     """
     score_reference = round(float(score_candidat), 2)
+    colonnes = _colonnes_distributions(path)
+    requises = {"filiere", "serie", "score_arrondi", "effectif"}
+    if not requises.issubset(colonnes):
+        return _resultat_indisponible(
+            score_reference,
+            nb_dossiers_concurrents,
+            seuil_admissibles,
+            "La base statistique ne contient pas de distribution par série.",
+        )
 
-    with sqlite3.connect(path) as con:
-        population, nb_devant, nb_inferieurs_ou_egaux = con.execute(
-            """
-            SELECT
-                COALESCE(SUM(effectif), 0) AS population,
-                COALESCE(
-                    SUM(
-                        CASE
-                            WHEN score_arrondi > ? THEN effectif
-                            ELSE 0
-                        END
-                    ),
-                    0
-                ) AS nb_devant,
-                COALESCE(
-                    SUM(
-                        CASE
-                            WHEN score_arrondi <= ? THEN effectif
-                            ELSE 0
-                        END
-                    ),
-                    0
-                ) AS nb_inferieurs_ou_egaux
-            FROM distributions_scores
-            WHERE filiere = ?
-            """,
-            (score_reference, score_reference, filiere),
-        ).fetchone()
+    try:
+        with sqlite3.connect(path) as con:
+            population, nb_devant, nb_inferieurs_ou_egaux = con.execute(
+                """
+                SELECT
+                    COALESCE(SUM(effectif), 0) AS population,
+                    COALESCE(SUM(CASE WHEN score_arrondi > ? THEN effectif ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN score_arrondi <= ? THEN effectif ELSE 0 END), 0)
+                FROM distributions_scores
+                WHERE UPPER(TRIM(filiere)) = UPPER(TRIM(?))
+                  AND UPPER(TRIM(serie)) = UPPER(TRIM(?))
+                """,
+                (score_reference, score_reference, str(filiere), str(serie)),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        return _resultat_indisponible(
+            score_reference,
+            nb_dossiers_concurrents,
+            seuil_admissibles,
+            f"Erreur de lecture de la base statistique : {exc}",
+        )
 
     population = int(population or 0)
     nb_devant = int(nb_devant or 0)
     nb_inferieurs_ou_egaux = int(nb_inferieurs_ou_egaux or 0)
 
-    invalid = (
-        population == 0
-        or nb_dossiers_concurrents <= 0
+    if population == 0:
+        return _resultat_indisponible(
+            score_reference,
+            nb_dossiers_concurrents,
+            seuil_admissibles,
+            f"Aucune distribution disponible pour {filiere} avec la série {serie}.",
+        )
+
+    if (
+        nb_dossiers_concurrents <= 0
         or seuil_admissibles <= 0
         or nb_dossiers_concurrents < seuil_admissibles
-    )
-
-    if invalid:
-        return {
-            "probabilite": None,
-            "probabilite_exacte": None,
-            "rang_moyen": None,
-            "rang_median": None,
-            "rang_p10": None,
-            "rang_p90": None,
-            "percentile": None,
-            "population": population,
-            "seuil_admissibles": int(seuil_admissibles),
-            "dossiers_concurrents": int(nb_dossiers_concurrents),
-            "proportion_devant": None,
-            "score_reference": score_reference,
-        }
+    ):
+        return _resultat_indisponible(
+            score_reference,
+            nb_dossiers_concurrents,
+            seuil_admissibles,
+            "Paramètres de projection invalides.",
+        )
 
     proportion_devant = nb_devant / population
     percentile = nb_inferieurs_ou_egaux / population * 100
-
     distribution_rang = binom(
         n=int(nb_dossiers_concurrents),
         p=float(proportion_devant),
     )
-
     probabilite_exacte = float(
         distribution_rang.cdf(int(seuil_admissibles) - 1) * 100
     )
 
     return {
+        "disponible": True,
+        "raison_indisponibilite": None,
         "probabilite": probabilite_exacte,
         "probabilite_exacte": probabilite_exacte,
-        "rang_moyen": float(
-            1 + nb_dossiers_concurrents * proportion_devant
-        ),
-        "rang_median": float(
-            1 + distribution_rang.ppf(0.50)
-        ),
-        "rang_p10": float(
-            1 + distribution_rang.ppf(0.10)
-        ),
-        "rang_p90": float(
-            1 + distribution_rang.ppf(0.90)
-        ),
+        "rang_moyen": float(1 + nb_dossiers_concurrents * proportion_devant),
+        "rang_median": float(1 + distribution_rang.ppf(0.50)),
+        "rang_p10": float(1 + distribution_rang.ppf(0.10)),
+        "rang_p90": float(1 + distribution_rang.ppf(0.90)),
         "percentile": float(percentile),
         "population": population,
         "seuil_admissibles": int(seuil_admissibles),
@@ -554,7 +771,8 @@ def evaluer_candidat_depuis_db(
     nb_places: int,
     nb_tirages: int = 5000,
     seed: int = 123,
-) -> Dict[str, float | int | None]:
+    serie: str = "",
+) -> Dict[str, float | int | str | bool | None]:
     """Alias de compatibilité.
 
     ``nb_tirages`` et ``seed`` sont conservés dans la signature pour les
@@ -563,6 +781,7 @@ def evaluer_candidat_depuis_db(
     return evaluer_admissibilite_depuis_db(
         path=path,
         filiere=filiere,
+        serie=serie,
         score_candidat=score_candidat,
         nb_dossiers_concurrents=nb_concurrents,
         seuil_admissibles=nb_places,

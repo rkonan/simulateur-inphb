@@ -1,113 +1,71 @@
 from __future__ import annotations
 
-from math import floor
-from typing import Final
+from dataclasses import dataclass
+import math
+import numpy as np
 
 
-class _Binomiale:
-    def __init__(self, n: int, p: float) -> None:
-        self.n: Final[int] = int(n)
-        self.p: Final[float] = float(p)
+@dataclass(frozen=True)
+class _BinomDistribution:
+    n: int
+    p: float
 
+    def __post_init__(self) -> None:
         if self.n < 0:
-            raise ValueError("n doit être supérieur ou égal à 0.")
-
+            raise ValueError("n doit être positif ou nul")
         if not 0.0 <= self.p <= 1.0:
-            raise ValueError("p doit être compris entre 0 et 1.")
+            raise ValueError("p doit être compris entre 0 et 1")
 
-        self._probabilites = self._construire_distribution()
-        self._cumul = self._construire_cumul()
+    def _probabilities(self) -> np.ndarray:
+        n, p = int(self.n), float(self.p)
+        probs = np.zeros(n + 1, dtype=float)
+        if p == 0.0:
+            probs[0] = 1.0
+            return probs
+        if p == 1.0:
+            probs[n] = 1.0
+            return probs
 
-    def _construire_distribution(self) -> list[float]:
-        if self.p == 0.0:
-            return [1.0] + [0.0] * self.n
-
-        if self.p == 1.0:
-            return [0.0] * self.n + [1.0]
-
-        q = 1.0 - self.p
-        mode = min(
-            self.n,
-            floor((self.n + 1) * self.p),
+        mode = min(n, int(math.floor((n + 1) * p)))
+        log_mode = (
+            math.lgamma(n + 1)
+            - math.lgamma(mode + 1)
+            - math.lgamma(n - mode + 1)
+            + mode * math.log(p)
+            + (n - mode) * math.log1p(-p)
         )
+        probs[mode] = math.exp(log_mode)
 
-        probabilites = [0.0] * (self.n + 1)
-        probabilites[mode] = 1.0
-
+        ratio_down = (1.0 - p) / p
         for k in range(mode, 0, -1):
-            probabilites[k - 1] = (
-                probabilites[k]
-                * k
-                / (self.n - k + 1)
-                * q
-                / self.p
-            )
+            probs[k - 1] = probs[k] * k / (n - k + 1) * ratio_down
 
-        for k in range(mode, self.n):
-            probabilites[k + 1] = (
-                probabilites[k]
-                * (self.n - k)
-                / (k + 1)
-                * self.p
-                / q
-            )
+        ratio_up = p / (1.0 - p)
+        for k in range(mode, n):
+            probs[k + 1] = probs[k] * (n - k) / (k + 1) * ratio_up
 
-        total = sum(probabilites)
-
-        if total <= 0.0:
-            raise ArithmeticError(
-                "Impossible de normaliser la distribution binomiale."
-            )
-
-        return [
-            valeur / total
-            for valeur in probabilites
-        ]
-
-    def _construire_cumul(self) -> list[float]:
-        cumul = []
-        somme = 0.0
-
-        for probabilite in self._probabilites:
-            somme += probabilite
-            cumul.append(min(somme, 1.0))
-
-        return cumul
+        total = float(probs.sum())
+        if total > 0:
+            probs /= total
+        return probs
 
     def cdf(self, k: int | float) -> float:
-        """Retourne P(X <= k)."""
-        indice = floor(float(k))
-
-        if indice < 0:
+        idx = int(math.floor(k))
+        if idx < 0:
             return 0.0
-
-        if indice >= self.n:
+        if idx >= self.n:
             return 1.0
+        return float(self._probabilities()[: idx + 1].sum())
 
-        return float(self._cumul[indice])
-
-    def ppf(self, quantile: float) -> float:
-        """Retourne le plus petit k tel que P(X <= k) >= quantile."""
-        q = float(quantile)
-
-        if not 0.0 <= q <= 1.0:
-            raise ValueError(
-                "Le quantile doit être compris entre 0 et 1."
-            )
-
-        if q == 0.0:
+    def ppf(self, q: float) -> float:
+        q = float(q)
+        if q <= 0.0:
             return 0.0
-
-        for k, cumul in enumerate(self._cumul):
-            if cumul >= q:
-                return float(k)
-
-        return float(self.n)
+        if q >= 1.0:
+            return float(self.n)
+        cumulative = np.cumsum(self._probabilities())
+        return float(np.searchsorted(cumulative, q, side="left"))
 
 
-def binom(
-    n: int,
-    p: float,
-) -> _Binomiale:
-    """Remplacement local minimal de scipy.stats.binom."""
-    return _Binomiale(n=n, p=p)
+def binom(n: int, p: float) -> _BinomDistribution:
+    return _BinomDistribution(int(n), float(p))
