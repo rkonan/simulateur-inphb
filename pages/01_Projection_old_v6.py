@@ -628,47 +628,6 @@ elif restore:
     st.session_state[manual_key] = st.session_state[baseline_key].copy()
     st.session_state[version_key] += 1
 
-def appliquer_modifications_projection(
-    editor_key: str,
-    dataframe_key: str,
-) -> None:
-    """
-    Applique les cellules modifiées au DataFrame de référence avant le rerun.
-
-    Streamlit exécute ce callback avant de relancer tout le script. Cela évite
-    que le tableau soit reconstruit à partir des projections automatiques lors
-    du premier rafraîchissement suivant une saisie.
-    """
-    editor_state = st.session_state.get(editor_key, {})
-    edited_rows = editor_state.get("edited_rows", {})
-
-    if not edited_rows or dataframe_key not in st.session_state:
-        return
-
-    dataframe = st.session_state[dataframe_key].copy().reset_index(drop=True)
-
-    for row_index_raw, changes in edited_rows.items():
-        try:
-            row_index = int(row_index_raw)
-        except (TypeError, ValueError):
-            continue
-
-        if row_index < 0 or row_index >= len(dataframe):
-            continue
-
-        for column, value in changes.items():
-            if column not in dataframe.columns:
-                continue
-            dataframe.at[row_index, column] = value
-
-    dataframe["Évolution finale"] = (
-        pd.to_numeric(dataframe["Bac projeté"], errors="coerce")
-        - pd.to_numeric(dataframe["Note actuelle"], errors="coerce")
-    )
-
-    st.session_state[dataframe_key] = dataframe
-
-
 if level == "Seconde":
     projection_columns = [
         "Matière", "Note actuelle", "Progression générale", "Ajustement matière",
@@ -688,9 +647,7 @@ else:
     ]
     editable_columns = ["Bac projeté"]
 
-editor_key = f"projection_editor_{st.session_state[version_key]}"
-
-st.data_editor(
+projection_notes = st.data_editor(
     st.session_state[manual_key][projection_columns],
     hide_index=True,
     width="stretch",
@@ -706,20 +663,18 @@ st.data_editor(
         "Bac projeté": st.column_config.NumberColumn(min_value=0.0, max_value=20.0, step=0.25, format="%.2f"),
         "Évolution finale": st.column_config.NumberColumn(format="%+.2f"),
     },
-    key=editor_key,
-    on_change=appliquer_modifications_projection,
-    args=(editor_key, manual_key),
+    key=f"projection_editor_{st.session_state[version_key]}",
 )
 
-# Le callback a déjà fusionné la cellule modifiée dans le DataFrame complet.
-# On repart donc directement de cet état, sans réinjecter la valeur de retour
-# du data_editor, qui pouvait encore correspondre au rendu précédent.
-projection_notes = st.session_state[manual_key].copy()
-projection_notes["Évolution finale"] = (
-    pd.to_numeric(projection_notes["Bac projeté"], errors="coerce")
-    - pd.to_numeric(projection_notes["Note actuelle"], errors="coerce")
-)
-st.session_state[manual_key] = projection_notes.copy()
+# Reconstituer le DataFrame complet, y compris les colonnes masquées selon le niveau.
+manual_full = st.session_state[manual_key].copy().set_index("Matière")
+visible_values = projection_notes.copy().set_index("Matière")
+for column in visible_values.columns:
+    manual_full.loc[visible_values.index, column] = visible_values[column]
+manual_full = manual_full.reset_index()
+manual_full["Évolution finale"] = manual_full["Bac projeté"] - manual_full["Note actuelle"]
+st.session_state[manual_key] = manual_full.copy()
+projection_notes = manual_full
 
 # Les valeurs saisies dans le tableau deviennent l'unique source de vérité
 # pour tous les calculs situés en dessous.
