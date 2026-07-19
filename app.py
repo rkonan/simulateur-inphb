@@ -117,6 +117,12 @@ LOCAL_PARAMS = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx"
 LOCAL_DB = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
 SEUIL_ADMISSIBLES = 1700
 
+
+
+raw = os.getenv("ENABLE_GOOGLE_SHEETS", "true")
+ENABLE_GOOGLE_SHEETS = raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def lire_secret(nom: str) -> str:
     valeur_env = os.getenv(nom)
 
@@ -1166,9 +1172,11 @@ if resultats_session:
 # -----------------------------------------------------------------------------
 if (
     st.session_state.get("sauvegarde_analyse_en_attente", False)
-    and not st.session_state.get("analyse_id")
+    and ENABLE_GOOGLE_SHEETS
+    and not st.session_state.get("analyse_id") 
 ):
     try:
+        print(f"ENABLE_GOOGLE_SHEETS : {ENABLE_GOOGLE_SHEETS}")
         analyse_id = STOCKAGE_ANALYSES.sauvegarder(
             AnalyseCandidat(
                 serie=str(st.session_state["analyse_serie"]),
@@ -1245,7 +1253,7 @@ if analyse_id_courant:
                 width="stretch",
             )
 
-        if envoyer_commentaire:
+        if envoyer_commentaire and ENABLE_GOOGLE_SHEETS:
             if not commentaire.strip():
                 st.warning("Écris un commentaire avant l'envoi.")
             else:
