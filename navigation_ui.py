@@ -85,5 +85,5 @@ def afficher_sidebar_admin() -> None:
             """,
             unsafe_allow_html=True,
         )
-        st.page_link("app.py", label="Retour à la simulation", icon="←")
+        st.page_link("app.py", label="Retour à la simulation", icon="⬅️")
         st.page_link("pages/01_Projection.py", label="Projection", icon="📈")
