@@ -58,12 +58,12 @@ def afficher_sidebar_publique() -> None:
             """
             <div class="sidebar-brand">
               <div class="sidebar-brand-title">🎓 Assistant INP-HB</div>
-              <div class="sidebar-brand-subtitle">Simuler · Progresser</div>
+              <div class="sidebar-brand-subtitle">Analyser · Progresser</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        st.page_link("app.py", label="Simulation du dossier", icon="🎓")
+        st.page_link("app.py", label="Analyse du dossier", icon="🎓")
         st.page_link("pages/01_Projection.py", label="Projection de progression", icon="📈")
         st.divider()
         st.markdown(

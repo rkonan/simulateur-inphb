@@ -393,151 +393,69 @@ with st.expander("🎛 Ajuster la progression matière par matière", expanded=T
             key=f"evolution_{serie}_{slug(mat)}",
         )
 
-current_bac, current_means, automatic_bac, automatic_means = build_profiles(
+current_bac, current_means, projected_bac, projected_means = build_profiles(
     edited, level, global_progress, bac_bonus, subject_adjustments
 )
 
 st.subheader("3. Projection globale des notes")
 st.caption(
-    "Les hypothèses ci-dessus préremplissent automatiquement le tableau. "
-    "Tu peux ensuite modifier directement une, plusieurs ou toutes les notes projetées. "
-    "Les scores, probabilités, rangs, scénarios et le PDF utiliseront les valeurs du tableau."
+    "Ce tableau récapitule les notes déjà saisies et les notes projetées après application "
+    "de la progression générale, des ajustements par matière et de l'hypothèse Bac."
 )
 
-automatic_rows: list[dict[str, Any]] = []
+projection_rows: list[dict[str, Any]] = []
 for _, row in edited.iterrows():
     mat = str(row["Matière"])
     note_actuelle = float(row[years[-1]])
-    automatic_rows.append(
+    projection_rows.append(
         {
             "Matière": mat,
             "Note actuelle": note_actuelle,
             "Progression générale": 0.0 if level == "Terminale" else float(global_progress),
             "Ajustement matière": float(subject_adjustments.get(mat, 0.0)),
-            "2nde": float(automatic_means[mat]["2nde"]),
-            "1ère": float(automatic_means[mat]["1ere"]),
-            "Terminale projetée": float(automatic_means[mat]["tle"]),
-            "Bac projeté": float(automatic_bac[mat]),
-            "Évolution finale": float(automatic_bac[mat] - note_actuelle),
+            "2nde": float(projected_means[mat]["2nde"]),
+            "1ère": float(projected_means[mat]["1ere"]),
+            "Terminale projetée": float(projected_means[mat]["tle"]),
+            "Bac projeté": float(projected_bac[mat]),
+            "Évolution finale": float(projected_bac[mat] - note_actuelle),
         }
     )
-automatic_projection = pd.DataFrame(automatic_rows)
 
-# Un contexte distinct évite qu'une saisie d'une série ou d'un niveau soit
-# réutilisée accidentellement dans un autre profil.
-projection_context = f"{serie}|{level}|{'|'.join(matieres)}"
-context_key = "projection_editable_context"
-manual_key = "projection_editable_values"
-baseline_key = "projection_automatic_baseline"
-version_key = "projection_editor_version"
+projection_notes = pd.DataFrame(projection_rows)
 
-if st.session_state.get(context_key) != projection_context:
-    st.session_state[context_key] = projection_context
-    st.session_state[manual_key] = automatic_projection.copy()
-    st.session_state[baseline_key] = automatic_projection.copy()
-    st.session_state[version_key] = int(st.session_state.get(version_key, 0)) + 1
-
-button_cols = st.columns([1, 1, 2])
-recalculate = button_cols[0].button(
-    "🔄 Recalculer les projections",
-    help="Applique les curseurs actuels et remplace toutes les notes projetées du tableau.",
-    use_container_width=True,
-)
-restore = button_cols[1].button(
-    "↩ Restaurer les valeurs automatiques",
-    help="Annule les modifications manuelles et revient au dernier scénario automatique appliqué.",
-    use_container_width=True,
-)
-
-if recalculate:
-    st.session_state[manual_key] = automatic_projection.copy()
-    st.session_state[baseline_key] = automatic_projection.copy()
-    st.session_state[version_key] += 1
-elif restore:
-    st.session_state[manual_key] = st.session_state[baseline_key].copy()
-    st.session_state[version_key] += 1
-
+# Les colonnes déjà passées restent visibles, mais on masque les étapes inutiles
+# afin de garder un tableau lisible selon le niveau de l'élève.
 if level == "Seconde":
     projection_columns = [
         "Matière", "Note actuelle", "Progression générale", "Ajustement matière",
         "1ère", "Terminale projetée", "Bac projeté", "Évolution finale",
     ]
-    editable_columns = ["1ère", "Terminale projetée", "Bac projeté"]
 elif level == "Première":
     projection_columns = [
         "Matière", "Note actuelle", "Progression générale", "Ajustement matière",
         "Terminale projetée", "Bac projeté", "Évolution finale",
     ]
-    editable_columns = ["Terminale projetée", "Bac projeté"]
 else:
     projection_columns = [
         "Matière", "Note actuelle", "Ajustement matière",
         "Terminale projetée", "Bac projeté", "Évolution finale",
     ]
-    editable_columns = ["Terminale projetée", "Bac projeté"]
 
-projection_notes = st.data_editor(
-    st.session_state[manual_key][projection_columns],
+st.dataframe(
+    projection_notes[projection_columns],
     hide_index=True,
     width="stretch",
-    disabled=[column for column in projection_columns if column not in editable_columns],
-    num_rows="fixed",
     column_config={
         "Matière": st.column_config.TextColumn("Matière"),
         "Note actuelle": st.column_config.NumberColumn(format="%.2f"),
         "Progression générale": st.column_config.NumberColumn(format="%+.2f"),
         "Ajustement matière": st.column_config.NumberColumn(format="%+.2f"),
-        "1ère": st.column_config.NumberColumn("Première projetée", min_value=0.0, max_value=20.0, step=0.25, format="%.2f"),
-        "Terminale projetée": st.column_config.NumberColumn(min_value=0.0, max_value=20.0, step=0.25, format="%.2f"),
-        "Bac projeté": st.column_config.NumberColumn(min_value=0.0, max_value=20.0, step=0.25, format="%.2f"),
+        "1ère": st.column_config.NumberColumn("Première projetée", format="%.2f"),
+        "Terminale projetée": st.column_config.NumberColumn(format="%.2f"),
+        "Bac projeté": st.column_config.NumberColumn(format="%.2f"),
         "Évolution finale": st.column_config.NumberColumn(format="%+.2f"),
     },
-    key=f"projection_editor_{st.session_state[version_key]}",
 )
-
-# Reconstituer le DataFrame complet, y compris les colonnes masquées selon le niveau.
-manual_full = st.session_state[manual_key].copy().set_index("Matière")
-visible_values = projection_notes.copy().set_index("Matière")
-for column in visible_values.columns:
-    manual_full.loc[visible_values.index, column] = visible_values[column]
-manual_full = manual_full.reset_index()
-manual_full["Évolution finale"] = manual_full["Bac projeté"] - manual_full["Note actuelle"]
-st.session_state[manual_key] = manual_full.copy()
-projection_notes = manual_full
-
-# Les valeurs saisies dans le tableau deviennent l'unique source de vérité
-# pour tous les calculs situés en dessous.
-projected_means = {mat: dict(automatic_means[mat]) for mat in matieres}
-projected_bac = dict(automatic_bac)
-for _, row in projection_notes.iterrows():
-    mat = str(row["Matière"])
-    if level == "Seconde":
-        projected_means[mat]["1ere"] = float(np.clip(row["1ère"], 0, 20))
-    projected_means[mat]["tle"] = float(np.clip(row["Terminale projetée"], 0, 20))
-    projected_bac[mat] = float(np.clip(row["Bac projeté"], 0, 20))
-
-baseline = st.session_state[baseline_key].set_index("Matière")
-manual_indexed = projection_notes.set_index("Matière")
-modified_subjects = []
-for mat in matieres:
-    compared_columns = editable_columns
-    if any(
-        not np.isclose(
-            float(manual_indexed.loc[mat, column]),
-            float(baseline.loc[mat, column]),
-            atol=1e-9,
-        )
-        for column in compared_columns
-    ):
-        modified_subjects.append(mat)
-
-if modified_subjects:
-    st.info(
-        f"✍️ **{len(modified_subjects)} matière(s) ajustée(s) manuellement** : "
-        + ", ".join(modified_subjects)
-    )
-else:
-    st.caption("Aucune note projetée n'a été ajustée manuellement.")
 
 _, current_scores_all = calculer_candidat(params, serie, mention, current_bac, current_means, calculable)
 _, projected_scores_all = calculer_candidat(params, serie, mention, projected_bac, projected_means, calculable)
@@ -761,21 +679,8 @@ else:
 st.subheader("6. Scénarios et plan de progression")
 scenario_rows = []
 for name, factor in [("Prudent", 0.5), ("Réaliste", 1.0), ("Ambitieux", 1.5)]:
-    # Les scénarios sont construits autour des notes réellement présentes dans
-    # le tableau : 50 % du progrès, scénario saisi, puis 150 % du progrès.
-    bac_s: dict[str, float] = {}
-    means_s: dict[str, dict[str, float]] = {}
-    for mat in matieres:
-        means_s[mat] = {}
-        for year in ("2nde", "1ere", "tle"):
-            current_value = float(current_means[mat][year])
-            projected_value = float(projected_means[mat][year])
-            means_s[mat][year] = float(np.clip(
-                current_value + factor * (projected_value - current_value), 0, 20
-            ))
-        bac_s[mat] = float(np.clip(
-            current_bac[mat] + factor * (projected_bac[mat] - current_bac[mat]), 0, 20
-        ))
+    adj = {m: value * factor for m, value in subject_adjustments.items()}
+    _, _, bac_s, means_s = build_profiles(edited, level, global_progress * factor, bac_bonus * factor, adj)
     _, scores_s = calculer_candidat(params, serie, mention, bac_s, means_s, [target])
     ev = evaluer_scores(scores_s, serie)
     if not ev.empty:
