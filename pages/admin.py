@@ -65,7 +65,7 @@ if not verifier_acces_admin():
 
 afficher_sidebar_admin()
 with st.sidebar:
-    if st.button("Se déconnecter", icon="🚪", use_container_width=True):
+    if st.button("Se déconnecter", icon="🏠", use_container_width=True):
         st.session_state.pop(SESSION_KEY, None)
         st.rerun()
 

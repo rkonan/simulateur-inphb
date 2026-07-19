@@ -26,10 +26,12 @@ streamlit run app.py
 ```bash
 python build_population_et_distributions_db.py \
   --params parametres_simulateur_inphb.xlsx \
-  --population-db population_inphb.db \
-  --distributions-db population_inphb_distributions.db \
+  --db population_inphb.db \
+  --db-distribution population_inphb_distributions.db \
   --n 200000 \
-  --batch-size 5000
+  --seed 123
+  --batch-size 
+  --part-profils-forts 0.6
 ```
 
 Consulte aussi `README_REFONTE_MT.md` pour la logique de construction des groupes de matières.

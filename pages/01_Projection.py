@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import io
+import json
 import os
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +56,41 @@ PARAMS_PATH = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx")
 DB_PATH = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
 NB_DOSSIERS = 3000
 SEUIL = 1700
+QUERY_STATE_KEY = "projection_state"
+
+
+def charger_etat_projection_url() -> dict[str, Any]:
+    """Recharge l'état sauvegardé dans l'URL après un rafraîchissement navigateur."""
+    raw = st.query_params.get(QUERY_STATE_KEY)
+    if not raw:
+        return {}
+    try:
+        compressed = base64.urlsafe_b64decode(str(raw).encode("ascii"))
+        decoded = zlib.decompress(compressed).decode("utf-8")
+        state = json.loads(decoded)
+        return state if isinstance(state, dict) else {}
+    except (ValueError, TypeError, json.JSONDecodeError, zlib.error):
+        return {}
+
+
+def sauvegarder_etat_projection_url(state: dict[str, Any]) -> None:
+    """Sauvegarde un état compact dans l'URL sans dépendre du session_state."""
+    try:
+        payload = json.dumps(
+            state,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        compressed = zlib.compress(payload, level=9)
+        encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
+        if st.query_params.get(QUERY_STATE_KEY) != encoded:
+            st.query_params[QUERY_STATE_KEY] = encoded
+    except (TypeError, ValueError):
+        # Une erreur de sérialisation ne doit jamais bloquer le simulateur.
+        pass
+
+
+etat_url = charger_etat_projection_url()
 
 
 def fmt(value: float | None, digits: int = 1) -> str:
@@ -334,9 +372,37 @@ if not PARAMS_PATH.exists():
 params = charger_parametres(PARAMS_PATH)
 
 profile_cols = st.columns(3)
-level = profile_cols[0].selectbox("Ton niveau actuel", ["Seconde", "Première", "Terminale"])
-serie = profile_cols[1].selectbox("Série de bac visée", sorted(params.coeffs_bac))
-mention = profile_cols[2].selectbox("Mention cible au bac", params.mentions["mention"].astype(str).tolist(), index=min(2, len(params.mentions)-1))
+
+level_options = ["Seconde", "Première", "Terminale"]
+saved_level = str(etat_url.get("level", ""))
+level_index = level_options.index(saved_level) if saved_level in level_options else 0
+level = profile_cols[0].selectbox(
+    "Ton niveau actuel",
+    level_options,
+    index=level_index,
+)
+
+serie_options = sorted(params.coeffs_bac)
+saved_serie = str(etat_url.get("serie", ""))
+serie_index = serie_options.index(saved_serie) if saved_serie in serie_options else 0
+serie = profile_cols[1].selectbox(
+    "Série de bac visée",
+    serie_options,
+    index=serie_index,
+)
+
+mention_options = params.mentions["mention"].astype(str).tolist()
+saved_mention = str(etat_url.get("mention", ""))
+mention_index = (
+    mention_options.index(saved_mention)
+    if saved_mention in mention_options
+    else min(2, len(mention_options) - 1)
+)
+mention = profile_cols[2].selectbox(
+    "Mention cible au bac",
+    mention_options,
+    index=mention_index,
+)
 
 compatible = filieres_autorisees_serie(params, serie)
 calculable: list[str] = []
@@ -350,17 +416,49 @@ if not calculable:
     st.warning("Aucune filière calculable pour cette série.")
     st.stop()
 
-target = st.selectbox("🎯 Filière objectif", calculable)
-selected = st.multiselect("Filières à comparer", calculable, default=calculable)
+saved_target = str(etat_url.get("target", ""))
+target_index = calculable.index(saved_target) if saved_target in calculable else 0
+target = st.selectbox(
+    "🎯 Filière objectif",
+    calculable,
+    index=target_index,
+)
+
+saved_selected = [
+    str(value)
+    for value in etat_url.get("selected", [])
+    if str(value) in calculable
+]
+selected = st.multiselect(
+    "Filières à comparer",
+    calculable,
+    default=saved_selected or calculable,
+)
 if not selected:
     st.stop()
 matieres = matieres_reelles_pour_formules(params, serie, calculable)
 
 st.subheader("1. Situation scolaire actuelle")
 years = completed_years(level)
+saved_current_notes = etat_url.get("current_notes", {})
+same_saved_profile = (
+    etat_url.get("level") == level
+    and etat_url.get("serie") == serie
+)
+
 initial_rows = []
 for mat in matieres:
-    row = {"Matière": mat, "2nde": 10.0, "1ere": 10.0, "tle": 10.0}
+    saved_row = (
+        saved_current_notes.get(mat, {})
+        if same_saved_profile and isinstance(saved_current_notes, dict)
+        else {}
+    )
+    row = {
+        "Matière": mat,
+        "2nde": float(saved_row.get("2nde", 10.0)),
+        "1ere": float(saved_row.get("1ere", 10.0)),
+        "tle": float(saved_row.get("tle", 10.0)),
+    }
     initial_rows.append(row)
 base = pd.DataFrame(initial_rows)
 visible_cols = ["Matière"] + years
@@ -379,13 +477,16 @@ edited = st.data_editor(
 )
 
 st.subheader("2. Hypothèses de progression")
+saved_global_progress = float(etat_url.get("global_progress", 1.0)) if same_saved_profile else 1.0
+saved_bac_bonus = float(etat_url.get("bac_bonus", 0.5)) if same_saved_profile else 0.5
+
 if level == "Terminale":
     global_progress = 0.0
     bac_bonus = st.slider(
         "Écart Bac par rapport à la moyenne de Terminale",
         -2.0,
         3.0,
-        0.5,
+        float(np.clip(saved_bac_bonus, -2.0, 3.0)),
         0.25,
         help="Hypothèse générale appliquée aux notes du Bac à partir de tes moyennes actuelles de Terminale.",
     )
@@ -395,7 +496,7 @@ else:
         "Progression jusqu'à la Terminale",
         -2.0,
         5.0,
-        1.0,
+        float(np.clip(saved_global_progress, -2.0, 5.0)),
         0.25,
         help="Progression générale appliquée aux années scolaires encore à venir.",
     )
@@ -403,7 +504,7 @@ else:
         "Écart Bac par rapport à la Terminale",
         -2.0,
         3.0,
-        0.5,
+        float(np.clip(saved_bac_bonus, -2.0, 3.0)),
         0.25,
     )
 
@@ -413,13 +514,23 @@ with st.expander("🎛 Ajuster la progression matière par matière", expanded=T
         st.caption("Ces curseurs ajustent directement la note de Bac projetée de chaque matière.")
     else:
         st.caption("Ces curseurs s'ajoutent à la progression générale. Ils permettent de tester un effort ciblé.")
+    saved_adjustments = (
+        etat_url.get("subject_adjustments", {})
+        if same_saved_profile
+        else {}
+    )
     columns = st.columns(2)
     for index, mat in enumerate(matieres):
+        saved_adjustment = (
+            float(saved_adjustments.get(mat, 0.0))
+            if isinstance(saved_adjustments, dict)
+            else 0.0
+        )
         subject_adjustments[mat] = columns[index % 2].slider(
             mat,
             -3.0,
             5.0,
-            0.0,
+            float(np.clip(saved_adjustment, -3.0, 5.0)),
             0.25,
             key=f"evolution_{serie}_{slug(mat)}",
         )
@@ -464,7 +575,36 @@ version_key = "projection_editor_version"
 
 if st.session_state.get(context_key) != projection_context:
     st.session_state[context_key] = projection_context
-    st.session_state[manual_key] = automatic_projection.copy()
+
+    restored_projection = automatic_projection.copy()
+    saved_projection_rows = etat_url.get("projected_notes", [])
+    if (
+        same_saved_profile
+        and isinstance(saved_projection_rows, list)
+        and saved_projection_rows
+    ):
+        try:
+            saved_projection = pd.DataFrame(saved_projection_rows)
+            required = {"Matière", "Bac projeté"}
+            if required.issubset(saved_projection.columns):
+                saved_projection = saved_projection.set_index("Matière")
+                restored_projection = restored_projection.set_index("Matière")
+                common_subjects = restored_projection.index.intersection(saved_projection.index)
+                for column in (
+                    "1ère",
+                    "Terminale projetée",
+                    "Bac projeté",
+                    "Évolution finale",
+                ):
+                    if column in saved_projection.columns:
+                        restored_projection.loc[common_subjects, column] = (
+                            saved_projection.loc[common_subjects, column]
+                        )
+                restored_projection = restored_projection.reset_index()
+        except (TypeError, ValueError, KeyError):
+            restored_projection = automatic_projection.copy()
+
+    st.session_state[manual_key] = restored_projection
     st.session_state[baseline_key] = automatic_projection.copy()
     st.session_state[version_key] = int(st.session_state.get(version_key, 0)) + 1
 
@@ -488,6 +628,47 @@ elif restore:
     st.session_state[manual_key] = st.session_state[baseline_key].copy()
     st.session_state[version_key] += 1
 
+def appliquer_modifications_projection(
+    editor_key: str,
+    dataframe_key: str,
+) -> None:
+    """
+    Applique les cellules modifiées au DataFrame de référence avant le rerun.
+
+    Streamlit exécute ce callback avant de relancer tout le script. Cela évite
+    que le tableau soit reconstruit à partir des projections automatiques lors
+    du premier rafraîchissement suivant une saisie.
+    """
+    editor_state = st.session_state.get(editor_key, {})
+    edited_rows = editor_state.get("edited_rows", {})
+
+    if not edited_rows or dataframe_key not in st.session_state:
+        return
+
+    dataframe = st.session_state[dataframe_key].copy().reset_index(drop=True)
+
+    for row_index_raw, changes in edited_rows.items():
+        try:
+            row_index = int(row_index_raw)
+        except (TypeError, ValueError):
+            continue
+
+        if row_index < 0 or row_index >= len(dataframe):
+            continue
+
+        for column, value in changes.items():
+            if column not in dataframe.columns:
+                continue
+            dataframe.at[row_index, column] = value
+
+    dataframe["Évolution finale"] = (
+        pd.to_numeric(dataframe["Bac projeté"], errors="coerce")
+        - pd.to_numeric(dataframe["Note actuelle"], errors="coerce")
+    )
+
+    st.session_state[dataframe_key] = dataframe
+
+
 if level == "Seconde":
     projection_columns = [
         "Matière", "Note actuelle", "Progression générale", "Ajustement matière",
@@ -507,7 +688,9 @@ else:
     ]
     editable_columns = ["Bac projeté"]
 
-projection_notes = st.data_editor(
+editor_key = f"projection_editor_{st.session_state[version_key]}"
+
+st.data_editor(
     st.session_state[manual_key][projection_columns],
     hide_index=True,
     width="stretch",
@@ -523,18 +706,20 @@ projection_notes = st.data_editor(
         "Bac projeté": st.column_config.NumberColumn(min_value=0.0, max_value=20.0, step=0.25, format="%.2f"),
         "Évolution finale": st.column_config.NumberColumn(format="%+.2f"),
     },
-    key=f"projection_editor_{st.session_state[version_key]}",
+    key=editor_key,
+    on_change=appliquer_modifications_projection,
+    args=(editor_key, manual_key),
 )
 
-# Reconstituer le DataFrame complet, y compris les colonnes masquées selon le niveau.
-manual_full = st.session_state[manual_key].copy().set_index("Matière")
-visible_values = projection_notes.copy().set_index("Matière")
-for column in visible_values.columns:
-    manual_full.loc[visible_values.index, column] = visible_values[column]
-manual_full = manual_full.reset_index()
-manual_full["Évolution finale"] = manual_full["Bac projeté"] - manual_full["Note actuelle"]
-st.session_state[manual_key] = manual_full.copy()
-projection_notes = manual_full
+# Le callback a déjà fusionné la cellule modifiée dans le DataFrame complet.
+# On repart donc directement de cet état, sans réinjecter la valeur de retour
+# du data_editor, qui pouvait encore correspondre au rendu précédent.
+projection_notes = st.session_state[manual_key].copy()
+projection_notes["Évolution finale"] = (
+    pd.to_numeric(projection_notes["Bac projeté"], errors="coerce")
+    - pd.to_numeric(projection_notes["Note actuelle"], errors="coerce")
+)
+st.session_state[manual_key] = projection_notes.copy()
 
 # Les valeurs saisies dans le tableau deviennent l'unique source de vérité
 # pour tous les calculs situés en dessous.
@@ -570,6 +755,45 @@ if modified_subjects:
     )
 else:
     st.caption("Aucune note projetée n'a été ajustée manuellement.")
+
+# Persistance après F5 : l'état utile est compressé dans l'URL.
+current_notes_payload: dict[str, dict[str, float]] = {}
+for _, current_row in edited.iterrows():
+    mat = str(current_row["Matière"])
+    current_notes_payload[mat] = {
+        year: float(current_row[year])
+        for year in years
+    }
+
+projection_payload = projection_notes.copy()
+numeric_projection_columns = [
+    column
+    for column in projection_payload.columns
+    if column != "Matière"
+]
+for column in numeric_projection_columns:
+    projection_payload[column] = pd.to_numeric(
+        projection_payload[column],
+        errors="coerce",
+    ).round(4)
+
+sauvegarder_etat_projection_url(
+    {
+        "level": level,
+        "serie": serie,
+        "mention": mention,
+        "target": target,
+        "selected": selected,
+        "global_progress": float(global_progress),
+        "bac_bonus": float(bac_bonus),
+        "subject_adjustments": {
+            mat: float(value)
+            for mat, value in subject_adjustments.items()
+        },
+        "current_notes": current_notes_payload,
+        "projected_notes": projection_payload.to_dict("records"),
+    }
+)
 
 _, current_scores_all = calculer_candidat(params, serie, mention, current_bac, current_means, calculable)
 _, projected_scores_all = calculer_candidat(params, serie, mention, projected_bac, projected_means, calculable)
@@ -849,14 +1073,75 @@ st.dataframe(
     },
 )
 
-trajectory = pd.DataFrame({
-    "Étape": ["2nde", "1ère", "Terminale", "Bac"],
-    **{
-        mat: [projected_means[mat]["2nde"], projected_means[mat]["1ere"], projected_means[mat]["tle"], projected_bac[mat]]
-        for mat in matieres[:6]
-    },
-}).set_index("Étape")
-st.line_chart(trajectory, y_label="Note projetée /20")
+# Trajectoire complète : moyennes réellement saisies jusqu'au niveau actuel,
+# puis moyennes projetées uniquement pour les étapes futures.
+edited_by_subject = edited.set_index("Matière")
+trajectory_data: dict[str, list[float] | list[str]] = {
+    "Étape": ["2nde", "1ère", "Terminale", "Bac"]
+}
+
+for mat in matieres[:6]:
+    if level == "Seconde":
+        values = [
+            float(edited_by_subject.loc[mat, "2nde"]),
+            float(projected_means[mat]["1ere"]),
+            float(projected_means[mat]["tle"]),
+            float(projected_bac[mat]),
+        ]
+    elif level == "Première":
+        values = [
+            float(edited_by_subject.loc[mat, "2nde"]),
+            float(edited_by_subject.loc[mat, "1ere"]),
+            float(projected_means[mat]["tle"]),
+            float(projected_bac[mat]),
+        ]
+    else:  # Terminale
+        values = [
+            float(edited_by_subject.loc[mat, "2nde"]),
+            float(edited_by_subject.loc[mat, "1ere"]),
+            float(edited_by_subject.loc[mat, "tle"]),
+            float(projected_bac[mat]),
+        ]
+
+    trajectory_data[mat] = values
+
+trajectory = pd.DataFrame(trajectory_data)
+trajectory_long = trajectory.melt(
+    id_vars="Étape",
+    var_name="Matière",
+    value_name="Note",
+)
+
+# Altair permet de verrouiller l'ordre chronologique de l'axe,
+# contrairement à st.line_chart qui peut trier les libellés alphabétiquement.
+import altair as alt
+
+trajectory_chart = (
+    alt.Chart(trajectory_long)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X(
+            "Étape:N",
+            sort=["2nde", "1ère", "Terminale", "Bac"],
+            title="Étape",
+        ),
+        y=alt.Y(
+            "Note:Q",
+            title="Note /20",
+            scale=alt.Scale(domain=[0, 20]),
+        ),
+        color=alt.Color("Matière:N", title="Matière"),
+        tooltip=[
+            alt.Tooltip("Étape:N", title="Étape"),
+            alt.Tooltip("Matière:N", title="Matière"),
+            alt.Tooltip("Note:Q", title="Note", format=".2f"),
+        ],
+    )
+    .properties(height=360)
+    .interactive()
+)
+
+st.altair_chart(trajectory_chart, width="stretch")
 
 st.subheader("7. Rapport personnalisé")
 st.caption("Le rapport reprend la synthèse, les matières prioritaires et le plan de progression. Il ne constitue pas une décision officielle.")
