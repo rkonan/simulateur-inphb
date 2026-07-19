@@ -148,11 +148,7 @@ def build_profiles(
 
         terminal_target = float(projected["tle"])
         projected_means[mat] = {key: float(value) for key, value in projected.items()}
-        # En Terminale, la moyenne de Terminale est déjà connue : l'ajustement matière
-        # représente directement l'effort ciblé attendu au Bac. Pour les niveaux
-        # antérieurs, il reste partiellement intégré à la projection finale du Bac.
-        bac_subject_adjustment = adj if level == "Terminale" else 0.25 * adj
-        projected_bac[mat] = float(np.clip(terminal_target + bac_bonus + bac_subject_adjustment, 0, 20))
+        projected_bac[mat] = float(np.clip(terminal_target + bac_bonus + 0.25 * adj, 0, 20))
 
     return current_bac, current_means, projected_bac, projected_means
 
@@ -379,40 +375,13 @@ edited = st.data_editor(
 )
 
 st.subheader("2. Hypothèses de progression")
-if level == "Terminale":
-    global_progress = 0.0
-    bac_bonus = st.slider(
-        "Écart Bac par rapport à la moyenne de Terminale",
-        -2.0,
-        3.0,
-        0.5,
-        0.25,
-        help="Hypothèse générale appliquée aux notes du Bac à partir de tes moyennes actuelles de Terminale.",
-    )
-else:
-    control_cols = st.columns(2)
-    global_progress = control_cols[0].slider(
-        "Progression jusqu'à la Terminale",
-        -2.0,
-        5.0,
-        1.0,
-        0.25,
-        help="Progression générale appliquée aux années scolaires encore à venir.",
-    )
-    bac_bonus = control_cols[1].slider(
-        "Écart Bac par rapport à la Terminale",
-        -2.0,
-        3.0,
-        0.5,
-        0.25,
-    )
+control_cols = st.columns(2)
+global_progress = control_cols[0].slider("Progression jusqu'à la Terminale", -2.0, 5.0, 1.0, 0.25, help="Progression générale appliquée aux années scolaires encore à venir.")
+bac_bonus = control_cols[1].slider("Écart Bac par rapport à la Terminale", -2.0, 3.0, 0.5, 0.25)
 
 subject_adjustments: dict[str, float] = {}
 with st.expander("🎛 Ajuster la progression matière par matière", expanded=True):
-    if level == "Terminale":
-        st.caption("Ces curseurs ajustent directement la note de Bac projetée de chaque matière.")
-    else:
-        st.caption("Ces curseurs s'ajoutent à la progression générale. Ils permettent de tester un effort ciblé.")
+    st.caption("Ces curseurs s'ajoutent à la progression générale. Ils permettent de tester un effort ciblé.")
     columns = st.columns(2)
     for index, mat in enumerate(matieres):
         subject_adjustments[mat] = columns[index % 2].slider(
@@ -503,9 +472,9 @@ elif level == "Première":
 else:
     projection_columns = [
         "Matière", "Note actuelle", "Ajustement matière",
-        "Bac projeté", "Évolution finale",
+        "Terminale projetée", "Bac projeté", "Évolution finale",
     ]
-    editable_columns = ["Bac projeté"]
+    editable_columns = ["Terminale projetée", "Bac projeté"]
 
 projection_notes = st.data_editor(
     st.session_state[manual_key][projection_columns],
@@ -544,8 +513,7 @@ for _, row in projection_notes.iterrows():
     mat = str(row["Matière"])
     if level == "Seconde":
         projected_means[mat]["1ere"] = float(np.clip(row["1ère"], 0, 20))
-    if level != "Terminale":
-        projected_means[mat]["tle"] = float(np.clip(row["Terminale projetée"], 0, 20))
+    projected_means[mat]["tle"] = float(np.clip(row["Terminale projetée"], 0, 20))
     projected_bac[mat] = float(np.clip(row["Bac projeté"], 0, 20))
 
 baseline = st.session_state[baseline_key].set_index("Matière")
