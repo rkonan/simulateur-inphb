@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 import sqlite3
 from pathlib import Path
@@ -8,19 +9,66 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Admin INP-HB V4", layout="wide")
-DB = Path(os.getenv("INPHB_DB", "population_inphb.db"))
+from navigation_ui import afficher_sidebar_admin, masquer_navigation_native
 
-password = st.text_input("Mot de passe administrateur", type="password")
-expected = os.getenv("ADMIN_PASSWORD", "")
-if not expected:
-    st.warning("Définis ADMIN_PASSWORD dans les variables d’environnement.")
+st.set_page_config(
+    page_title="Administration INP-HB",
+    page_icon="🔐",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+DB = Path(os.getenv("INPHB_DB", "population_inphb.db"))
+SESSION_KEY = "inphb_admin_authenticated"
+
+
+def lire_mot_de_passe_admin() -> str:
+    valeur = os.getenv("ADMIN_PASSWORD", "").strip()
+    if valeur:
+        return valeur
+    try:
+        return str(st.secrets["ADMIN_PASSWORD"]).strip()
+    except (KeyError, FileNotFoundError):
+        return ""
+
+
+def verifier_acces_admin() -> bool:
+    attendu = lire_mot_de_passe_admin()
+    if not attendu:
+        st.error(
+            "Accès administrateur non configuré. Définis la variable "
+            "d’environnement `ADMIN_PASSWORD` ou ajoute-la dans `.streamlit/secrets.toml`."
+        )
+        return False
+
+    if st.session_state.get(SESSION_KEY, False):
+        return True
+
+    masquer_navigation_native()
+    st.title("🔐 Administration")
+    st.caption("Cette zone est réservée à l’administrateur de l’application.")
+
+    with st.form("admin_login", clear_on_submit=False):
+        mot_de_passe = st.text_input("Mot de passe", type="password", autocomplete="current-password")
+        connexion = st.form_submit_button("Se connecter", type="primary", use_container_width=True)
+
+    if connexion:
+        if hmac.compare_digest(mot_de_passe, attendu):
+            st.session_state[SESSION_KEY] = True
+            st.rerun()
+        st.error("Mot de passe incorrect.")
+    return False
+
+
+if not verifier_acces_admin():
     st.stop()
-if password != expected:
-    st.stop()
-if not DB.exists():
-    st.error("Base introuvable.")
-    st.stop()
+
+afficher_sidebar_admin()
+with st.sidebar:
+    if st.button("Se déconnecter", icon="🚪", use_container_width=True):
+        st.session_state.pop(SESSION_KEY, None)
+        st.rerun()
+
 
 st.title("Administration du modèle V4")
 with sqlite3.connect(DB) as con:

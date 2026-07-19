@@ -302,89 +302,6 @@ with st.expander("🎛 Ajuster la progression matière par matière", expanded=T
 current_bac, current_means, projected_bac, projected_means = build_profiles(
     edited, level, global_progress, bac_bonus, subject_adjustments
 )
-
-st.subheader("3. Projection globale des notes")
-st.caption(
-    "Ce tableau récapitule les notes déjà saisies et les notes projetées après application "
-    "de la progression générale, des ajustements par matière et de l'hypothèse Bac."
-)
-
-projection_rows: list[dict[str, Any]] = []
-for _, row in edited.iterrows():
-    mat = str(row["Matière"])
-    note_actuelle = float(row[years[-1]])
-    projection_rows.append(
-        {
-            "Matière": mat,
-            "Note actuelle": note_actuelle,
-            "Progression générale": 0.0 if level == "Terminale" else float(global_progress),
-            "Ajustement matière": float(subject_adjustments.get(mat, 0.0)),
-            "2nde": float(projected_means[mat]["2nde"]),
-            "1ère": float(projected_means[mat]["1ere"]),
-            "Terminale projetée": float(projected_means[mat]["tle"]),
-            "Bac projeté": float(projected_bac[mat]),
-            "Évolution finale": float(projected_bac[mat] - note_actuelle),
-        }
-    )
-
-projection_notes = pd.DataFrame(projection_rows)
-
-# Les colonnes déjà passées restent visibles, mais on masque les étapes inutiles
-# afin de garder un tableau lisible selon le niveau de l'élève.
-if level == "Seconde":
-    projection_columns = [
-        "Matière", "Note actuelle", "Progression générale", "Ajustement matière",
-        "1ère", "Terminale projetée", "Bac projeté", "Évolution finale",
-    ]
-elif level == "Première":
-    projection_columns = [
-        "Matière", "Note actuelle", "Progression générale", "Ajustement matière",
-        "Terminale projetée", "Bac projeté", "Évolution finale",
-    ]
-else:
-    projection_columns = [
-        "Matière", "Note actuelle", "Ajustement matière",
-        "Terminale projetée", "Bac projeté", "Évolution finale",
-    ]
-
-st.dataframe(
-    projection_notes[projection_columns],
-    hide_index=True,
-    width="stretch",
-    column_config={
-        "Matière": st.column_config.TextColumn("Matière"),
-        "Note actuelle": st.column_config.NumberColumn(format="%.2f"),
-        "Progression générale": st.column_config.NumberColumn(format="%+.2f"),
-        "Ajustement matière": st.column_config.NumberColumn(format="%+.2f"),
-        "1ère": st.column_config.NumberColumn("Première projetée", format="%.2f"),
-        "Terminale projetée": st.column_config.NumberColumn(format="%.2f"),
-        "Bac projeté": st.column_config.NumberColumn(format="%.2f"),
-        "Évolution finale": st.column_config.NumberColumn(format="%+.2f"),
-    },
-)
-
-moyenne_actuelle = float(projection_notes["Note actuelle"].mean())
-moyenne_terminale = float(projection_notes["Terminale projetée"].mean())
-moyenne_bac = float(projection_notes["Bac projeté"].mean())
-progression_moyenne = moyenne_bac - moyenne_actuelle
-
-# summary_cols = st.columns(4)
-# summary_cols[0].metric("Moyenne actuelle", f"{fmt(moyenne_actuelle, 2)}/20")
-# summary_cols[1].metric(
-#     "Moyenne Terminale projetée",
-#     f"{fmt(moyenne_terminale, 2)}/20",
-#     f"{fmt(moyenne_terminale - moyenne_actuelle, 2)} pt",
-# )
-# summary_cols[2].metric(
-#     "Moyenne Bac projetée",
-#     f"{fmt(moyenne_bac, 2)}/20",
-#     f"{fmt(progression_moyenne, 2)} pt",
-# )
-# summary_cols[3].metric(
-#     "Progression globale",
-#     f"{fmt(progression_moyenne, 2)} point" if abs(progression_moyenne) < 2 else f"{fmt(progression_moyenne, 2)} points",
-# )
-
 _, current_scores_all = calculer_candidat(params, serie, mention, current_bac, current_means, calculable)
 _, projected_scores_all = calculer_candidat(params, serie, mention, projected_bac, projected_means, calculable)
 current_scores = {f: current_scores_all[f] for f in selected if f in current_scores_all}
@@ -398,7 +315,7 @@ comparison["Gain probabilité"] = comparison["Probabilité projetée"] - compari
 comparison["Gain de places"] = comparison["Rang moyen actuelle"] - comparison["Rang moyen projetée"]
 comparison = comparison.sort_values(["Probabilité projetée", "Score projetée"], ascending=False, na_position="last")
 
-st.subheader("4. Impact sur l'admissibilité")
+st.subheader("3. Impact sur l'admissibilité")
 obj = comparison[comparison["Filière"] == target]
 if not obj.empty:
     r = obj.iloc[0]
@@ -434,7 +351,7 @@ st.dataframe(
     },
 )
 
-st.subheader("5. Matières à plus fort impact")
+st.subheader("4. Matières à plus fort impact")
 impact_rows = []
 baseline_target = projected_scores_all.get(target)
 baseline_eval = evaluer_scores({target: baseline_target}, serie) if baseline_target is not None else pd.DataFrame()
@@ -475,7 +392,7 @@ if not impact.empty:
         f"**{fmt(best['Gain score +1'], 3)} point**."
     )
 
-st.subheader("6. Scénarios et plan de progression")
+st.subheader("5. Scénarios et plan de progression")
 scenario_rows = []
 for name, factor in [("Prudent", 0.5), ("Réaliste", 1.0), ("Ambitieux", 1.5)]:
     adj = {m: value * factor for m, value in subject_adjustments.items()}
@@ -530,7 +447,7 @@ trajectory = pd.DataFrame({
 }).set_index("Étape")
 st.line_chart(trajectory, y_label="Note projetée /20")
 
-st.subheader("7. Rapport personnalisé")
+st.subheader("6. Rapport personnalisé")
 st.caption("Le rapport reprend la synthèse, les matières prioritaires et le plan de progression. Il ne constitue pas une décision officielle.")
 pdf = make_report_pdf(serie, level, target, current_result, projected_result, impact, plan)
 if pdf:

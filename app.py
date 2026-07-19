@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from navigation_ui import afficher_sidebar_publique
+
 from streamlit_js_eval import streamlit_js_eval
 from simulateur_core import (
     calculer_candidat,
@@ -37,17 +39,18 @@ st.set_page_config(
     page_title="Analyse dossier INP-HB",
     page_icon="🎓",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 st.markdown(
     """
     <style>
     [data-testid="stSidebar"] {
-        display: none;
+        min-width: 285px;
     }
 
-    [data-testid="collapsedControl"] {
-        display: none;
+    [data-testid="stSidebar"] .stPageLink a {
+        border-radius: 10px;
+        padding: 0.55rem 0.65rem;
     }
 
     .filiere-table-wrap {
@@ -107,6 +110,9 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+afficher_sidebar_publique()
+
+
 LOCAL_PARAMS = Path(os.getenv("INPHB_PARAMS", "parametres_simulateur_inphb.xlsx"))
 LOCAL_DB = Path(os.getenv("INPHB_DISTRIBUTIONS_DB", "population_inphb_distributions.db"))
 SEUIL_ADMISSIBLES = 1700
@@ -512,7 +518,7 @@ def saisir_notes_mobile(
 nb_dossiers=3000
 st.title("🎓 Analyse de dossier bachelier INP-HB")
 
-st.page_link("pages/01_Projection.py", label="📈 Simuler ma progression et mon admissibilité", icon="🎯")
+#st.page_link("pages/01_Projection.py", label="📈 Simuler ma progression et mon admissibilité", icon="🎯")
 
 st.markdown(
     """

@@ -37,3 +37,13 @@ Consulte aussi `README_REFONTE_MT.md` pour la logique de construction des groupe
 ## Secrets
 
 Le fichier `.streamlit/secrets.toml` n'est pas inclus dans l'archive. Utilise `.streamlit/secrets.toml.example` comme modèle afin d'éviter de publier des identifiants sur GitHub.
+
+## Accès administrateur
+
+La page d’administration n’apparaît pas dans la navigation publique.
+
+- URL directe : `/admin`
+- Protection : variable d’environnement `ADMIN_PASSWORD` ou clé `ADMIN_PASSWORD` dans `.streamlit/secrets.toml`
+- Exemple local : voir `.streamlit/secrets.toml.example`
+
+Exemple Render : ajouter `ADMIN_PASSWORD` dans **Environment** puis ouvrir `https://votre-app.onrender.com/admin`.

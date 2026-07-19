@@ -24,3 +24,5 @@ Fonctionnalités :
 ## Base statistique
 
 La page utilise la même base `population_inphb_distributions.db` que l'analyse principale. En l'absence de la base, les scores restent calculables mais les probabilités et rangs sont indisponibles.
+
+Les statistiques détaillées par spécialité du Brevet de Technicien (BT) n'étant pas publiées, chaque spécialité est rattachée à sa famille (tertiaire ou industrielle) et utilise les statistiques officielles agrégées correspondantes. Cette hypothèse pourra être remplacée dès que des données détaillées seront disponibles.
