@@ -62,7 +62,7 @@ class SimParams:
     eligibilite: pd.DataFrame
     liens_filieres: pd.DataFrame
 
-
+@st.cache_data(show_spinner=False)
 def charger_parametres(fichier_excel: str | Path) -> SimParams:
     path = Path(fichier_excel)
     bac = pd.read_excel(path, sheet_name="coefficients_bac").dropna(
