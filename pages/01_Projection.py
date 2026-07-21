@@ -433,6 +433,7 @@ selected = st.multiselect(
     "Filières à comparer",
     calculable,
     default=saved_selected or calculable,
+    key=f"filieres_comparees_{serie}",
 )
 if not selected:
     st.stop()
