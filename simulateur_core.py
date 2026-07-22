@@ -10,26 +10,9 @@ import numpy as np
 import pandas as pd
 #from scipy.stats import binom
 from binom_local import binom
+from inphb.parameters import SimParams
 
-ALIASES_MATIERES = {
-    "Mathématiques": "Maths", "Mathematiques": "Maths", "Maths": "Maths",
-    "Sciences Physiques": "SP", "Sciences physiques": "SP", "SP": "SP",
-    "SVT": "SVT", "Sciences de la Vie et de La Terre": "SVT",
-    "Français": "Français", "Francais": "Français",
-    "Anglais": "Anglais", "Langue": "Anglais", "LV1": "Anglais", "LV2": "LV2",
-    "ScEco": "ScEco", "Sciences Economiques et Sociales": "ScEco",
-    "MT": "MT", "Matière Technique": "MT",
-    "Philosophie": "Philosophie", "Histoire-Géo": "Histoire-Géo",
-}
 
-BIAIS_SERIE = {
-    "A1": {"Français": 0.8, "Anglais": 0.8, "Maths": -0.5},
-    "A2": {"Français": 0.8, "Anglais": 0.9, "Maths": -0.7},
-    "B": {"ScEco": 0.9, "Maths": 0.2, "Français": 0.2, "Anglais": 0.1},
-    "C": {"Maths": 1.0, "SP": 0.8, "SVT": -0.2, "Français": -0.5, "Anglais": -0.2},
-    "D": {"Maths": 0.1, "SP": 0.3, "SVT": 1.0, "Français": -0.2, "Anglais": -0.1},
-    "E": {"Maths": 0.8, "SP": 0.7, "MT": 1.0, "Français": -0.5, "Anglais": -0.2},
-}
 
 # Hypothèse V3 pour les 600 profils supplémentaires, plus faibles que les 900 admis.
 # Cette distribution est volontairement plus large et doit rester paramétrable.
@@ -41,110 +24,12 @@ DISTRIBUTION_MENTIONS_EXTENSION = {
 }
 
 
-def canon(matiere: str) -> str:
-    return ALIASES_MATIERES.get(str(matiere).strip(), str(matiere).strip())
+
 
 
 def slug(value: str) -> str:
     text = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode()
     return "_".join(part for part in "".join(c if c.isalnum() else " " for c in text).lower().split())
-
-
-@dataclass
-class SimParams:
-    fichier_excel: Path
-    coeffs_bac: Dict[str, Dict[str, float]]
-    groupes_score_bac: Dict[str, Dict[str, Tuple[Tuple[str, float], ...]]]
-    coeffs_inphb: pd.DataFrame
-    places: pd.DataFrame
-    mentions: pd.DataFrame
-    stats_series: pd.DataFrame
-    eligibilite: pd.DataFrame
-    liens_filieres: pd.DataFrame
-
-@st.cache_data(show_spinner=False)
-def charger_parametres(fichier_excel: str | Path) -> SimParams:
-    path = Path(fichier_excel)
-    bac = pd.read_excel(path, sheet_name="coefficients_bac").dropna(
-        subset=["serie", "matiere", "coefficient"]
-    )
-    coeffs_bac: Dict[str, Dict[str, float]] = {}
-
-    for _, row in bac.iterrows():
-        serie = str(row["serie"]).strip()
-        matiere = canon(row["matiere"])
-        coefficient = float(row["coefficient"])
-
-        if matiere in coeffs_bac.setdefault(serie, {}):
-            raise ValueError(
-                f"Matière BAC dupliquée après normalisation : {serie} / {matiere}."
-            )
-        coeffs_bac[serie][matiere] = coefficient
-
-    groupes_df = pd.read_excel(path, sheet_name="groupes_matieres").dropna(
-        subset=["serie", "matiere_bac", "groupe_inphb"]
-    )
-    colonnes_requises = {"serie", "matiere_bac", "groupe_inphb", "poids"}
-    manquantes = colonnes_requises.difference(groupes_df.columns)
-    if manquantes:
-        raise ValueError(
-            "Colonnes manquantes dans groupes_matieres : "
-            + ", ".join(sorted(manquantes))
-        )
-
-    groupes_temp: Dict[str, Dict[str, List[Tuple[str, float]]]] = {}
-    for _, row in groupes_df.iterrows():
-        serie = str(row["serie"]).strip()
-        matiere = canon(row["matiere_bac"])
-        groupe = canon(row["groupe_inphb"])
-        poids = pd.to_numeric(row["poids"], errors="coerce")
-
-        if serie not in coeffs_bac:
-            raise ValueError(
-                f"Série inconnue dans groupes_matieres : {serie}."
-            )
-        if matiere not in coeffs_bac[serie]:
-            raise ValueError(
-                f"Matière absente de coefficients_bac : {serie} / {matiere}."
-            )
-        if pd.isna(poids) or float(poids) <= 0:
-            raise ValueError(
-                f"Poids invalide dans groupes_matieres : {serie} / {matiere} / {groupe}."
-            )
-
-        lignes = groupes_temp.setdefault(serie, {}).setdefault(matiere, [])
-        if any(g == groupe for g, _ in lignes):
-            raise ValueError(
-                f"Mapping dupliqué dans groupes_matieres : {serie} / {matiere} / {groupe}."
-            )
-        lignes.append((groupe, float(poids)))
-
-    groupes_score_bac: Dict[str, Dict[str, Tuple[Tuple[str, float], ...]]] = {}
-    for serie, matieres in coeffs_bac.items():
-        groupes_score_bac[serie] = {}
-        for matiere, coefficient_bac in matieres.items():
-            mappings = groupes_temp.get(serie, {}).get(matiere)
-            groupes_score_bac[serie][matiere] = tuple(
-                mappings if mappings else [(matiere, float(coefficient_bac))]
-            )
-
-    inp = pd.read_excel(path, sheet_name="coefficients_inphb")
-    inp["matiere"] = inp["matiere"].map(canon)
-    return SimParams(
-        fichier_excel=path,
-        coeffs_bac=coeffs_bac,
-        groupes_score_bac=groupes_score_bac,
-        coeffs_inphb=inp,
-        places=pd.read_excel(path, sheet_name="places_estimees"),
-        mentions=pd.read_excel(path, sheet_name="mentions_inphb"),
-        stats_series=pd.read_excel(path, sheet_name="stats_series_2025"),
-        eligibilite=pd.read_excel(path, sheet_name="eligibilite_inphb"),
-        liens_filieres=pd.read_excel(path, sheet_name="liens_filieres"),
-    )
-
-def formules_dossier(params: SimParams) -> pd.DataFrame:
-    df = params.coeffs_inphb.copy()
-    return df[~df["cycle"].astype(str).str.strip().str.lower().str.startswith("admission")].copy()
 
 
 def _series_cell(cell: object) -> List[str]:
@@ -227,99 +112,6 @@ def _serie_correspond_formule(serie: str, cell: object) -> bool:
     return False
 
 
-def profil_coefficients_filiere(
-    params: SimParams,
-    filiere: str,
-    serie: str | None = None,
-) -> str | None:
-    """Retourne le profil de coefficients déclaré dans l'onglet d'éligibilité."""
-    df = _eligibilite_normalisee(params)
-    df = df[
-        df["groupe_filiere"].astype(str).str.upper()
-        == str(filiere).strip().upper()
-    ]
-    if serie is not None:
-        serie_norm = str(serie).strip().upper()
-        df = df[
-            df["series_ou_BT_admissibles"].map(
-                lambda c: serie_norm in {x.upper() for x in _series_cell(c)}
-            )
-        ]
-    if df.empty:
-        return None
-
-    if "profil_coefficients" not in df.columns:
-        # Compatibilité avec les anciens fichiers : une filière portant le
-        # même code que sa formule peut encore être calculée.
-        return str(filiere).strip()
-
-    valeurs = df["profil_coefficients"].dropna().astype(str).str.strip()
-    valeurs = valeurs[valeurs != ""]
-    return valeurs.iloc[0] if not valeurs.empty else None
-
-
-def lignes_formule(params: SimParams, filiere: str, serie: str) -> pd.DataFrame:
-    """Retourne les matières et coefficients applicables à une filière/série.
-
-    Le dénominateur et le libellé de la formule ne sont jamais lus dans Excel :
-    ils sont déduits automatiquement des coefficients sélectionnés.
-    """
-    profil = profil_coefficients_filiere(params, filiere, serie)
-    if not profil:
-        raise ValueError(
-            f"Aucun profil de coefficients n'est défini pour {filiere} "
-            f"avec la série {serie}."
-        )
-
-    df = formules_dossier(params)
-    df = df[
-        df["concours_filiere"].astype(str).str.upper()
-        == str(profil).strip().upper()
-    ]
-    df = df[
-        df["series_autorisees"].map(
-            lambda c: _serie_correspond_formule(serie, c)
-        )
-    ]
-    if df.empty:
-        raise ValueError(
-            f"Les coefficients du profil {profil} manquent pour la série {serie} "
-            f"(filière {filiere})."
-        )
-
-    df = df.copy()
-    df["coefficient_dossier"] = pd.to_numeric(
-        df["coefficient_dossier"], errors="coerce"
-    )
-    df = df.dropna(subset=["matiere", "coefficient_dossier"])
-    df = df[df["coefficient_dossier"] > 0]
-    if df.empty:
-        raise ValueError(
-            f"Aucun coefficient positif n'est défini pour le profil {profil}, "
-            f"série {serie}."
-        )
-    return df
-
-
-def denominateur_formule(params: SimParams, filiere: str, serie: str) -> float:
-    """Somme automatiquement les coefficients de la formule applicable."""
-    df = lignes_formule(params, filiere, serie)
-    denominateur = float(df["coefficient_dossier"].sum())
-    if denominateur <= 0:
-        raise ValueError(
-            f"Le dénominateur calculé est nul pour {filiere}, série {serie}."
-        )
-    return denominateur
-
-
-def libelle_formule(params: SimParams, filiere: str, serie: str) -> str:
-    """Génère une formule lisible depuis les matières et coefficients Excel."""
-    df = lignes_formule(params, filiere, serie)
-    termes = [
-        f"{row.matiere}×{float(row.coefficient_dossier):g}"
-        for row in df.itertuples(index=False)
-    ]
-    return " + ".join(termes) + f" / {denominateur_formule(params, filiere, serie):g}"
 
 
 def moyenne_ponderee(notes: Dict[str, float], coeffs: Dict[str, float]) -> float:
@@ -327,11 +119,6 @@ def moyenne_ponderee(notes: Dict[str, float], coeffs: Dict[str, float]) -> float
     return float(sum(v * c for v, c in vals) / sum(c for _, c in vals)) if vals else np.nan
 
 
-def bornes_mention(mention: str, mentions_df: pd.DataFrame) -> Tuple[float, float]:
-    row = mentions_df[mentions_df["mention"].astype(str) == str(mention)]
-    if row.empty:
-        raise ValueError(f"Mention inconnue : {mention}")
-    return float(row.iloc[0]["borne_min_incluse"]), float(row.iloc[0]["borne_max_exclue"])
 
 
 def mention_depuis_moyenne(moyenne: float, mentions_df: pd.DataFrame) -> str:
@@ -341,40 +128,8 @@ def mention_depuis_moyenne(moyenne: float, mentions_df: pd.DataFrame) -> str:
     return "Non admis"
 
 
-def quotas_entiers(labels: List[str], proportions: np.ndarray, n: int) -> Dict[str, int]:
-    p = np.asarray(proportions, dtype=float)
-    p = p / p.sum()
-    raw = p * n
-    counts = np.floor(raw).astype(int)
-    remainder = n - int(counts.sum())
-    if remainder:
-        counts[np.argsort(raw - counts)[-remainder:]] += 1
-    return dict(zip(labels, counts.astype(int)))
 
 
-def distribution_series_globale(params: SimParams) -> Tuple[List[str], np.ndarray]:
-    stats = params.stats_series.copy()
-    stats["serie"] = stats["serie"].astype(str).str.strip()
-    stats = stats[stats["serie"].isin(params.coeffs_bac)]
-    if stats.empty:
-        raise ValueError("Aucune série exploitable avec coefficients BAC.")
-    weights = stats["admis_T"].astype(float).to_numpy()
-    return stats["serie"].tolist(), weights / weights.sum()
-
-
-def distribution_mentions_fortes(params: SimParams) -> Tuple[List[str], np.ndarray]:
-    return (
-        params.mentions["mention"].astype(str).tolist(),
-        params.mentions["proportion"].astype(float).to_numpy(),
-    )
-
-
-def distribution_mentions_extension(params: SimParams) -> Tuple[List[str], np.ndarray]:
-    labels = params.mentions["mention"].astype(str).tolist()
-    probs = np.array([DISTRIBUTION_MENTIONS_EXTENSION.get(label, 0.0) for label in labels], dtype=float)
-    if probs.sum() <= 0:
-        raise ValueError("La distribution des profils supplémentaires est vide.")
-    return labels, probs / probs.sum()
 
 
 def construire_tableau(labels: List[str], probs: np.ndarray, n: int, rng: np.random.Generator) -> np.ndarray:
@@ -384,121 +139,6 @@ def construire_tableau(labels: List[str], probs: np.ndarray, n: int, rng: np.ran
     return arr
 
 
-def ajuster_notes_vers_moyenne(notes: Dict[str, float], coeffs: Dict[str, float], cible: float) -> Dict[str, float]:
-    mats = list(coeffs)
-    values = np.array([notes[m] for m in mats])
-    weights = np.array([coeffs[m] for m in mats])
-    lo, hi = -20.0, 20.0
-    for _ in range(60):
-        shift = (lo + hi) / 2
-        mean = np.average(np.clip(values + shift, 0, 20), weights=weights)
-        if mean < cible:
-            lo = shift
-        else:
-            hi = shift
-    adjusted = np.clip(values + (lo + hi) / 2, 0, 20)
-    return {m: round(float(v), 2) for m, v in zip(mats, adjusted)}
-
-
-def generer_notes_bac_pour_mention(
-    serie: str,
-    mention: str,
-    params: SimParams,
-    rng: np.random.Generator,
-    sigma_matiere: float = 2.4,
-) -> Dict[str, float]:
-    coeffs = params.coeffs_bac[serie]
-    low, high = bornes_mention(mention, params.mentions)
-    target = float(rng.uniform(low + 0.05, min(high - 0.05, 19.95)))
-    biases = BIAIS_SERIE.get(serie, {})
-    raw = {}
-    for matiere in coeffs:
-        mappings = params.groupes_score_bac.get(serie, {}).get(
-            matiere, ((matiere, float(coeffs[matiere])),)
-        )
-        biais = biases.get(matiere)
-        if biais is None:
-            biais = max(
-                (biases.get(groupe, 0.0) for groupe, _ in mappings),
-                default=0.0,
-            )
-        raw[matiere] = float(
-            np.clip(
-                target + float(biais) + rng.normal(0, sigma_matiere),
-                0,
-                20,
-            )
-        )
-    return ajuster_notes_vers_moyenne(raw, coeffs, target)
-
-
-def generer_moyennes_classe(
-    note_bac: float,
-    rng: np.random.Generator,
-    sigma_niveau: float = 0.8,
-    sigma_annee: float = 0.6,
-    progression: float = 0.25,
-) -> Dict[str, float]:
-    level = note_bac + rng.normal(0, sigma_niveau)
-    return {
-        "2nde": round(float(np.clip(level - progression + rng.normal(0, sigma_annee), 0, 20)), 2),
-        "1ere": round(float(np.clip(level + rng.normal(0, sigma_annee), 0, 20)), 2),
-        "tle": round(float(np.clip(level + progression + rng.normal(0, sigma_annee), 0, 20)), 2),
-    }
-
-
-def calculer_mc_mgm(note_bac: float, moyennes: Dict[str, float]) -> Tuple[float, float]:
-    mc = (2 * moyennes["2nde"] + 3 * moyennes["1ere"] + 5 * moyennes["tle"]) / 10
-    mgm = (mc + 3 * note_bac) / 4
-    return round(float(mc), 4), round(float(mgm), 4)
-
-
-def construire_mgm_groupes(
-    mgm_detail: Dict[str, float],
-    serie: str,
-    params: SimParams,
-) -> Dict[str, float]:
-    """Construit les MGM utilisées dans les formules INP-HB.
-
-    Les notes restent saisies et stockées au niveau des matières réelles du bac.
-    Chaque groupe synthétique (par exemple ``MT``) est une moyenne pondérée par
-    les poids définis dans l'onglet ``groupes_matieres``. Par défaut, ces poids
-    reprennent les coefficients du bac.
-
-    Une épreuve combinée peut alimenter plusieurs groupes, par exemple une ligne
-    ``Maths & Sciences Physiques`` déclarée ``Maths|SP``.
-    """
-    if serie not in params.coeffs_bac:
-        raise ValueError(f"Série inconnue dans coefficients_bac : {serie}")
-
-    numerateurs: Dict[str, float] = {}
-    denominateurs: Dict[str, float] = {}
-
-    for matiere, valeur in mgm_detail.items():
-        if matiere not in params.coeffs_bac[serie]:
-            continue
-
-        coefficient_bac = float(params.coeffs_bac[serie][matiere])
-        mappings = params.groupes_score_bac.get(serie, {}).get(
-            matiere,
-            ((matiere, coefficient_bac),),
-        )
-
-        for groupe, poids in mappings:
-            numerateurs[groupe] = (
-                numerateurs.get(groupe, 0.0) + float(valeur) * float(poids)
-            )
-            denominateurs[groupe] = (
-                denominateurs.get(groupe, 0.0) + float(poids)
-            )
-
-    groupes_mgm = dict(mgm_detail)
-    for groupe, numerateur in numerateurs.items():
-        denominateur = denominateurs[groupe]
-        if denominateur > 0:
-            groupes_mgm[groupe] = round(numerateur / denominateur, 4)
-
-    return groupes_mgm
 
 
 def matieres_reelles_pour_formules(
@@ -570,47 +210,6 @@ def moyenne_dossier_inphb(mgm: Dict[str, float], params: SimParams, filiere: str
             raise ValueError(f"Matière manquante : {mat}")
         total += mgm[mat] * float(row["coefficient_dossier"])
     return round(total / denominator, 4)
-
-
-def calculer_candidat(
-    params: SimParams,
-    serie: str,
-    mention: str,
-    notes_bac: Dict[str, float],
-    moyennes: Dict[str, Dict[str, float]],
-    filieres: Iterable[str],
-) -> Tuple[pd.DataFrame, Dict[str, float]]:
-    del mention  # La mention est informative lors d'une saisie réelle.
-    rows, mgm_detail = [], {}
-
-    for mat in sorted(notes_bac):
-        mc, val = calculer_mc_mgm(notes_bac[mat], moyennes[mat])
-        mgm_detail[mat] = val
-        rows.append({
-            "Matière": mat,
-            "2nde": moyennes[mat]["2nde"],
-            "1ère": moyennes[mat]["1ere"],
-            "Terminale": moyennes[mat]["tle"],
-            "Bac": notes_bac[mat],
-            "MC": mc,
-            "MGM": val,
-        })
-
-    mgm_score = construire_mgm_groupes(mgm_detail, serie, params)
-
-    scores = {}
-    for filiere in filieres:
-        try:
-            scores[filiere] = moyenne_dossier_inphb(
-                mgm_score,
-                params,
-                filiere,
-                serie,
-            )
-        except ValueError:
-            pass
-
-    return pd.DataFrame(rows), scores
 
 
 def initialiser_db_population(path: str | Path) -> None:
@@ -861,128 +460,3 @@ def _resultat_indisponible(
         "score_reference": score_reference,
     }
 
-
-def evaluer_admissibilite_depuis_db(
-    path: str | Path,
-    filiere: str,
-    serie: str,
-    score_candidat: float,
-    nb_dossiers_concurrents: int,
-    seuil_admissibles: int = 1500,
-) -> Dict[str, float | int | str | bool | None]:
-    """Évalue l'admissibilité pour un couple précis filière/série.
-
-    La table ``distributions_scores`` doit contenir les colonnes ``filiere``,
-    ``serie``, ``score_arrondi`` et ``effectif``. Une ancienne base agrégée
-    uniquement par filière est volontairement déclarée indisponible afin de ne
-    pas mélanger des séries dont les profils statistiques sont différents.
-    """
-    score_reference = round(float(score_candidat), 2)
-    colonnes = _colonnes_distributions(path)
-    requises = {"filiere", "serie", "score_arrondi", "effectif"}
-    if not requises.issubset(colonnes):
-        return _resultat_indisponible(
-            score_reference,
-            nb_dossiers_concurrents,
-            seuil_admissibles,
-            "La base statistique ne contient pas de distribution par série.",
-        )
-
-    try:
-        with sqlite3.connect(path) as con:
-            population, nb_devant, nb_inferieurs_ou_egaux = con.execute(
-                """
-                SELECT
-                    COALESCE(SUM(effectif), 0) AS population,
-                    COALESCE(SUM(CASE WHEN score_arrondi > ? THEN effectif ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN score_arrondi <= ? THEN effectif ELSE 0 END), 0)
-                FROM distributions_scores
-                WHERE UPPER(TRIM(filiere)) = UPPER(TRIM(?))
-                  AND UPPER(TRIM(serie)) = UPPER(TRIM(?))
-                """,
-                (score_reference, score_reference, str(filiere), str(serie)),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        return _resultat_indisponible(
-            score_reference,
-            nb_dossiers_concurrents,
-            seuil_admissibles,
-            f"Erreur de lecture de la base statistique : {exc}",
-        )
-
-    population = int(population or 0)
-    nb_devant = int(nb_devant or 0)
-    nb_inferieurs_ou_egaux = int(nb_inferieurs_ou_egaux or 0)
-
-    if population == 0:
-        return _resultat_indisponible(
-            score_reference,
-            nb_dossiers_concurrents,
-            seuil_admissibles,
-            f"Aucune distribution disponible pour {filiere} avec la série {serie}.",
-        )
-
-    if (
-        nb_dossiers_concurrents <= 0
-        or seuil_admissibles <= 0
-        or nb_dossiers_concurrents < seuil_admissibles
-    ):
-        return _resultat_indisponible(
-            score_reference,
-            nb_dossiers_concurrents,
-            seuil_admissibles,
-            "Paramètres de projection invalides.",
-        )
-
-    proportion_devant = nb_devant / population
-    percentile = nb_inferieurs_ou_egaux / population * 100
-    distribution_rang = binom(
-        n=int(nb_dossiers_concurrents),
-        p=float(proportion_devant),
-    )
-    probabilite_exacte = float(
-        distribution_rang.cdf(int(seuil_admissibles) - 1) * 100
-    )
-
-    return {
-        "disponible": True,
-        "raison_indisponibilite": None,
-        "probabilite": probabilite_exacte,
-        "probabilite_exacte": probabilite_exacte,
-        "rang_moyen": float(1 + nb_dossiers_concurrents * proportion_devant),
-        "rang_median": float(1 + distribution_rang.ppf(0.50)),
-        "rang_p10": float(1 + distribution_rang.ppf(0.10)),
-        "rang_p90": float(1 + distribution_rang.ppf(0.90)),
-        "percentile": float(percentile),
-        "population": population,
-        "seuil_admissibles": int(seuil_admissibles),
-        "dossiers_concurrents": int(nb_dossiers_concurrents),
-        "proportion_devant": float(proportion_devant),
-        "score_reference": score_reference,
-    }
-
-
-# Alias temporaire pour éviter de casser d'anciens imports.
-def evaluer_candidat_depuis_db(
-    path: str | Path,
-    filiere: str,
-    score_candidat: float,
-    nb_concurrents: int,
-    nb_places: int,
-    nb_tirages: int = 5000,
-    seed: int = 123,
-    serie: str = "",
-) -> Dict[str, float | int | str | bool | None]:
-    """Alias de compatibilité.
-
-    ``nb_tirages`` et ``seed`` sont conservés dans la signature pour les
-    anciens appels, mais ne sont plus utilisés.
-    """
-    return evaluer_admissibilite_depuis_db(
-        path=path,
-        filiere=filiere,
-        serie=serie,
-        score_candidat=score_candidat,
-        nb_dossiers_concurrents=nb_concurrents,
-        seuil_admissibles=nb_places,
-    )
