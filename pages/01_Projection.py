@@ -416,21 +416,13 @@ if not calculable:
     st.warning("Aucune filière calculable pour cette série.")
     st.stop()
 
-saved_target = str(etat_url.get("target", ""))
-target_index = calculable.index(saved_target) if saved_target in calculable else 0
-target = st.selectbox(
-    "🎯 Filière objectif",
-    calculable,
-    index=target_index,
-)
-
 saved_selected = [
     str(value)
     for value in etat_url.get("selected", [])
     if str(value) in calculable
 ]
 selected = st.multiselect(
-    "Filières à comparer",
+    "Filières à analyser",
     calculable,
     default=saved_selected or calculable,
     key=f"filieres_comparees_{serie}",
@@ -783,7 +775,6 @@ sauvegarder_etat_projection_url(
         "level": level,
         "serie": serie,
         "mention": mention,
-        "target": target,
         "selected": selected,
         "global_progress": float(global_progress),
         "bac_bonus": float(bac_bonus),
@@ -810,14 +801,28 @@ comparison["Gain de places"] = comparison["Rang moyen actuelle"] - comparison["R
 comparison = comparison.sort_values(["Probabilité projetée", "Score projetée"], ascending=False, na_position="last")
 
 st.subheader("4. Impact sur l'admissibilité")
-obj = comparison[comparison["Filière"] == target]
-if not obj.empty:
-    r = obj.iloc[0]
+if not comparison.empty:
+    best_projection = comparison.iloc[0]
     metrics = st.columns(4)
-    metrics[0].metric("Score actuel", fmt(r["Score actuelle"], 2), f"{fmt(r['Gain score'],2)} projeté")
-    metrics[1].metric("Probabilité actuelle", fmt(r["Probabilité actuelle"], 1) + " %", fmt(r["Gain probabilité"], 1) + " pt")
-    metrics[2].metric("Rang moyen projeté", fmt(r["Rang moyen projetée"], 0), fmt(r["Gain de places"], 0) + " places gagnées")
-    metrics[3].metric("Niveau projeté", niveau_probabilite(r["Probabilité projetée"]))
+    metrics[0].metric(
+        "Meilleure filière projetée",
+        str(best_projection["Filière"]),
+    )
+    metrics[1].metric(
+        "Score projeté",
+        fmt(best_projection["Score projetée"], 2),
+        f"{fmt(best_projection['Gain score'], 2)}",
+    )
+    metrics[2].metric(
+        "Probabilité projetée",
+        fmt(best_projection["Probabilité projetée"], 1) + " %",
+        fmt(best_projection["Gain probabilité"], 1) + " pt",
+    )
+    metrics[3].metric(
+        "Rang moyen projeté",
+        fmt(best_projection["Rang moyen projetée"], 0),
+        fmt(best_projection["Gain de places"], 0) + " places gagnées",
+    )
 
 chart_data = comparison.set_index("Filière")[["Probabilité actuelle", "Probabilité projetée"]].rename(
     columns={"Probabilité actuelle": "Aujourd'hui", "Probabilité projetée": "Projection"}
@@ -856,12 +861,13 @@ analysis_mode = st.radio(
     ["Toutes les filières sélectionnées", "Une filière spécifique"],
     horizontal=True,
 )
-analysis_target = target
+saved_target = str(etat_url.get("target", ""))
+analysis_target = saved_target if saved_target in selected else selected[0]
 if analysis_mode == "Une filière spécifique":
     analysis_target = st.selectbox(
         "Filière analysée",
         selected,
-        index=selected.index(target) if target in selected else 0,
+        index=selected.index(analysis_target),
         key="impact_filiere_cible",
     )
 
@@ -1016,6 +1022,46 @@ else:
         )
 
 st.subheader("6. Scénarios et plan de progression")
+
+st.caption(
+    "Choisis maintenant la filière sur laquelle tu souhaites construire "
+    "un plan de progression personnalisé."
+)
+
+target_index = (
+    selected.index(saved_target)
+    if saved_target in selected
+    else 0
+)
+
+target = st.selectbox(
+    "🎯 Filière objectif",
+    selected,
+    index=target_index,
+    help="Cette filière est utilisée uniquement pour les scénarios, le plan de progression et le rapport PDF.",
+)
+
+# La filière objectif n'est définie qu'à partir de la section 6.
+# On complète ici l'état sauvegardé dans l'URL.
+sauvegarder_etat_projection_url(
+    {
+        "level": level,
+        "serie": serie,
+        "mention": mention,
+        "target": target,
+        "selected": selected,
+        "global_progress": float(global_progress),
+        "bac_bonus": float(bac_bonus),
+        "subject_adjustments": {
+            mat: float(value)
+            for mat, value in subject_adjustments.items()
+        },
+        "current_notes": current_notes_payload,
+        "projected_notes": projection_payload.to_dict("records"),
+    }
+)
+
+
 scenario_rows = []
 for name, factor in [("Prudent", 0.5), ("Réaliste", 1.0), ("Ambitieux", 1.5)]:
     # Les scénarios sont construits autour des notes réellement présentes dans
